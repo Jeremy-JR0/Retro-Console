@@ -5,14 +5,20 @@
 #include <map>
 #include <string.h> // For strcmp
 #include <math.h>   // For math functions
-#include <vector>
+
+// Joystick Command Definitions
+#define COMMAND_NO     0x00
+#define COMMAND_LEFT   0x01
+#define COMMAND_RIGHT  0x02
+#define COMMAND_UP     0x04
+#define COMMAND_DOWN   0x08
 
 // =========================
 // VGA Configuration
 // =========================
 
 // VGA Pin Configuration
-const PinConfig pins(-1, -1, -1, -1, 1, -1, -1, -1, -1, -1, 12, -1, -1, -1, -1, 3, 13, 12);
+const PinConfig pins(-1, -1, -1, -1, 18, -1, -1, -1, -1, -1, 43, -1, -1, -1, -1, 44, 21, 16);
 
 // VGA Device and Mode Setup
 VGA vga;
@@ -25,11 +31,13 @@ GfxWrapper<VGA> gfx(vga, mode.hRes, mode.vRes);
 
 // Structure to receive data from the controller
 typedef struct struct_message {
-  char a[32];   // Identifier (e.g., unique ID for the controller)
-  int b;        // Button for moving between menu items (e.g., -1 for up, 1 for down)
-  float c;      // Placeholder (if needed for future extension)
-  bool d;       // Button for selecting the current menu item
+  char a[32];       // Identifier (e.g., unique ID for the controller)
+  int b;        // Button for moving between menu items
+  float c;          // Movement input or placeholder
+  bool d;        // Button for selecting the current menu item or action
+  int command;  // Joystick command
 } struct_message;
+
 
 // Map to store data from each controller
 std::map<int, struct_message> controllerData;
@@ -58,7 +66,7 @@ std::map<String, int> controllerMap;  // Key: MAC address string, Value: Control
 // Menu Items
 // =========================
 
-const char* mainMenuItems[] = {"Pong", "Snake", "Flappy Bird"};
+const char* mainMenuItems[] = {"Pong", "Snake", "Flappy Bird", "Doom"};
 const int totalMainMenuItems = sizeof(mainMenuItems) / sizeof(mainMenuItems[0]);
 
 const char* playerCountMenuItems[] = {"Single Player", "Two Player"};
@@ -137,18 +145,16 @@ void drawFlappyBirdGameTwoPlayer();
 void handleFlappyBirdCollisionsSinglePlayer();
 void handleFlappyBirdCollisionsTwoPlayer();
 
-// Snake Game Functions
-void resetSnakeGame(bool isSinglePlayer);
-void runSnake(bool isSinglePlayer);
-void runSnakeSinglePlayer();
-void runSnakeTwoPlayer();
-void updateSnakeSinglePlayer();
-void updateSnakeTwoPlayer();
-void drawSnakeGameSinglePlayer();
-void drawSnakeGameTwoPlayer();
-void handleSnakeInputSinglePlayer();
-void handleSnakeInputTwoPlayer();
-void displaySnakeGameOver(const char* message);
+// 3D Game Functions
+void run3DGame();
+void initializeMonsters();
+void updateBullets();
+void renderMonsters(float ZBuffer[]);
+void renderBullets();
+bool checkCollisionWithMonsters(float x, float y);
+void drawFrame3D();
+void handle3DGameInputs();
+void display3DGameOverScreen();
 
 // =========================
 // Game Variables (Pong)
@@ -245,40 +251,64 @@ int fbScore1;
 int fbScore2;
 
 // =========================
-// Snake Game Variables
+// 3D Game Variables
 // =========================
 
-// Game Constants
-const int gridSize = 10;  // Size of each grid cell in pixels
-const int gridWidth = mode.hRes / gridSize;
-const int gridHeight = mode.vRes / gridSize;
+// Map Configuration for 3D Game
+const int mapWidth3D = 16;
+const int mapHeight3D = 16;
 
-// Snake Properties
-struct Point {
-    int x;
-    int y;
+const char worldMap3D[] =
+    "################"
+    "#..............#"
+    "#..............#"
+    "#...##.........#"
+    "#..............#"
+    "#..............#"
+    "#..............#"
+    "#......###.....#"
+    "#..............#"
+    "#..............#"
+    "#..............#"
+    "#..............#"
+    "#......##......#"
+    "#..............#"
+    "#..............#"
+    "################";
+
+// Player Properties
+float posX = 8.0f, posY = 8.0f;   // Player position
+float dirX = -1.0f, dirY = 0.0f;  // Initial direction vector
+float planeX = 0.0f, planeY = 0.66f; // 2D raycaster version of camera plane
+
+// Timing for 3D Game
+unsigned long previousMillis3D = 0;
+const long interval3D = 16;  // Frame update interval (~60 FPS)
+
+// Monster and Bullet Structures
+struct Monster {
+    float x;
+    float y;
+    bool alive;
 };
 
-// Single-player variables
-std::vector<Point> snake;
-int snakeDirection = 0;  // 0=Up, 1=Right, 2=Down, 3=Left
-Point food;
-int snakeScore = 0;
+struct Bullet {
+    float x;
+    float y;
+    float dirX;
+    float dirY;
+    bool active;
+};
 
-// Two-player variables
-std::vector<Point> snake1;
-std::vector<Point> snake2;
-int snakeDirection1 = 0;  // Player 1
-int snakeDirection2 = 0;  // Player 2
-Point food1;
-Point food2;
-int snakeScore1 = 0;
-int snakeScore2 = 0;
-bool snakeGameInitialized = false;
-bool snakePlayer1Alive = true;
-bool snakePlayer2Alive = true;
-unsigned long snakePreviousMillis = 0;
-const long snakeInterval = 100;  // Snake movement interval in milliseconds
+const int maxMonsters = 10;
+Monster monsters[maxMonsters];
+
+const int maxBullets = 5;
+Bullet bullets[maxBullets];
+
+// Game State for 3D Game
+enum GameState3D { GAME_PLAYING_3D, GAME_OVER_3D };
+GameState3D gameState3D = GAME_PLAYING_3D;
 
 // =========================
 // Setup Function
@@ -288,6 +318,8 @@ void setup() {
   // Initialize Serial for Debugging
   Serial.begin(115200);
   Serial.println("VGA Menu System with ESP-NOW Controller");
+  Serial.print("Size of struct_message: ");
+  Serial.println(sizeof(struct_message));  // Should print 49
 
   // Initialize VGA with GfxWrapper
   vga.bufferCount = 2; // Double buffering for smoother display
@@ -315,9 +347,6 @@ void setup() {
   // Register the callback function for receiving data
   esp_now_register_recv_cb(OnDataRecv);
 
-  // Seed the random number generator
-  randomSeed(analogRead(0));
-
   // Display startup screen
   displayStartupScreen();
 }
@@ -333,16 +362,20 @@ void loop() {
     case STARTUP:
       if (currentMillis - startupStartTime >= startupDuration) {
         appState = MENU_MAIN;
-        displayMenuMain();
+      } else {
+        // Keep displaying the startup screen
+        displayStartupScreen();
       }
       break;
 
     case MENU_MAIN:
-      // Menu is handled via controller inputs
+      // Continuously display the main menu to prevent flickering
+      displayMenuMain();
       break;
 
     case MENU_PLAYER_COUNT:
-      // Player count selection is handled via controller inputs
+      // Continuously display the player count menu to prevent flickering
+      displayMenuPlayerCount();
       break;
 
     case GAME_RUNNING:
@@ -360,7 +393,8 @@ void loop() {
 
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   if (len != sizeof(struct_message)) {
-    Serial.println("Received data of incorrect size");
+    Serial.print("Received data of incorrect size: ");
+    Serial.println(len);
     return;
   }
 
@@ -406,19 +440,17 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
       // Transition to player count selection if needed
       if (strcmp(selectedGame, "Pong") == 0 || 
           strcmp(selectedGame, "Snake") == 0 || 
-          strcmp(selectedGame, "Flappy Bird") == 0) {
+          strcmp(selectedGame, "Flappy Bird") == 0 ||
+          strcmp(selectedGame, "Doom") == 0) {
         appState = MENU_PLAYER_COUNT;
-        displayMenuPlayerCount();
+        currentPlayerCountItem = 0; // Reset player count selection
       }
-      // Add additional game selections as needed
     } else {
       // Handle navigation
       if (data.b == 1) { // Move down
         currentMainMenuItem = (currentMainMenuItem + 1) % totalMainMenuItems;
-        displayMenuMain();
       } else if (data.b == -1) { // Move up
         currentMainMenuItem = (currentMainMenuItem - 1 + totalMainMenuItems) % totalMainMenuItems;
-        displayMenuMain();
       }
     }
   }
@@ -445,18 +477,23 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
         // Reset Flappy Bird game
         resetFlappyBirdGame(currentPlayerCountItem == 0);
       }
-      else if (strcmp(selectedGame, "Snake") == 0) {
-        // Reset Snake game
-        resetSnakeGame(currentPlayerCountItem == 0);
+      else if (strcmp(selectedGame, "Doom") == 0) {
+        // Initialize 3D game variables
+        posX = 8.0f;
+        posY = 8.0f;
+        dirX = -1.0f;
+        dirY = 0.0f;
+        planeX = 0.0f;
+        planeY = 0.66f;
+        initializeMonsters();
+        gameState3D = GAME_PLAYING_3D;
       }
     } else {
       // Handle navigation
       if (data.b == 1) { // Move down
         currentPlayerCountItem = (currentPlayerCountItem + 1) % totalPlayerCountMenuItems;
-        displayMenuPlayerCount();
       } else if (data.b == -1) { // Move up
         currentPlayerCountItem = (currentPlayerCountItem - 1 + totalPlayerCountMenuItems) % totalPlayerCountMenuItems;
-        displayMenuPlayerCount();
       }
     }
   }
@@ -502,8 +539,6 @@ void displayStartupScreen() {
   // Set cursor and print text
   gfx.setCursor(cursorX, cursorY);
   gfx.println(startupText);
-
-  startupStartTime = millis();
 }
 
 // Display Main Menu
@@ -582,9 +617,8 @@ void runSelectedGame() {
     bool isSinglePlayer = (currentPlayerCountItem == 0);
     runFlappyBird(isSinglePlayer);
   }
-  else if (strcmp(selectedGame, "Snake") == 0) {
-    bool isSinglePlayer = (currentPlayerCountItem == 0);
-    runSnake(isSinglePlayer);
+  else if (strcmp(selectedGame, "Doom") == 0) {
+    run3DGame();
   }
   // Add other games here
 }
@@ -920,7 +954,7 @@ void runFlappyBird(bool isSinglePlayer) {
 
 void runFlappyBirdSinglePlayer() {
   // Process input
-  if (controllerData[1].d) {
+  if (controllerData[1].b) { // Use Button 2 to jump
     fbBirdSpeedY = fbJumpStrength;
   }
 
@@ -1120,369 +1154,411 @@ void drawFlappyBirdGameTwoPlayer() {
 }
 
 // =========================
-// Snake Game Functions
+// 3D Game Functions
 // =========================
 
-void resetSnakeGame(bool isSinglePlayer) {
-  snakeGameInitialized = true;
-  snakePreviousMillis = millis();
-  snakePlayer1Alive = true;
-  snakePlayer2Alive = true;
+// (3D game functions remain the same as previously provided)
 
-  if (isSinglePlayer) {
-    // Single-player initialization
-    snake.clear();
-    Point head = { gridWidth / 2, gridHeight / 2 };
-    snake.push_back(head);
-    snakeDirection = 0;  // Start moving up
-    snakeScore = 0;
-    // Spawn food
-    spawnFoodSinglePlayer();
-  } else {
-    // Two-player initialization
-    // Player 1
-    snake1.clear();
-    Point head1 = { gridWidth / 4, gridHeight / 4 };
-    snake1.push_back(head1);
-    snakeDirection1 = 0;
-    snakeScore1 = 0;
-    // Player 2
-    snake2.clear();
-    Point head2 = { 3 * gridWidth / 4, 3 * gridHeight / 4 };
-    snake2.push_back(head2);
-    snakeDirection2 = 2;
-    snakeScore2 = 0;
-    // Spawn food for both players
-    spawnFoodTwoPlayer();
-  }
-}
-
-void runSnake(bool isSinglePlayer) {
-  if (!snakeGameInitialized) {
-    resetSnakeGame(isSinglePlayer);
-  }
-
+void run3DGame() {
   unsigned long currentMillis = millis();
-  if (currentMillis - snakePreviousMillis >= snakeInterval) {
-    snakePreviousMillis = currentMillis;
-    if (isSinglePlayer) {
-      handleSnakeInputSinglePlayer();
-      updateSnakeSinglePlayer();
-      drawSnakeGameSinglePlayer();
-    } else {
-      handleSnakeInputTwoPlayer();
-      updateSnakeTwoPlayer();
-      drawSnakeGameTwoPlayer();
-    }
-  }
-}
 
-void handleSnakeInputSinglePlayer() {
-  // Controller 1: Player 1 Snake
-  if (controllerData[1].b == -1) {
-    // Turn left
-    snakeDirection = (snakeDirection + 3) % 4;
-  }
-  if (controllerData[1].b == 1) {
-    // Turn right
-    snakeDirection = (snakeDirection + 1) % 4;
-  }
-}
-
-void handleSnakeInputTwoPlayer() {
-  // Controller 1: Player 1 Snake
-  if (controllerData[1].b == -1) {
-    // Turn left
-    snakeDirection1 = (snakeDirection1 + 3) % 4;
-  }
-  if (controllerData[1].b == 1) {
-    // Turn right
-    snakeDirection1 = (snakeDirection1 + 1) % 4;
-  }
-
-  // Controller 2: Player 2 Snake
-  if (controllerData[2].b == -1) {
-    // Turn left
-    snakeDirection2 = (snakeDirection2 + 3) % 4;
-  }
-  if (controllerData[2].b == 1) {
-    // Turn right
-    snakeDirection2 = (snakeDirection2 + 1) % 4;
-  }
-}
-
-void updateSnakeSinglePlayer() {
-  if (!snakePlayer1Alive) {
-    displaySnakeGameOver("Game Over!");
-    if (controllerData[1].d) {
+  if (gameState3D == GAME_OVER_3D) {
+    display3DGameOverScreen();
+    if (controllerData[1].d) {  // Use Select button to return to menu
+      delay(200);
       appState = MENU_MAIN;
       displayMenuMain();
-      snakeGameInitialized = false;
-    }
-    return;
-  }
-
-  // Calculate new head position
-  Point newHead = snake.front();
-  switch (snakeDirection) {
-    case 0: newHead.y--; break;  // Up
-    case 1: newHead.x++; break;  // Right
-    case 2: newHead.y++; break;  // Down
-    case 3: newHead.x--; break;  // Left
-  }
-
-  // Check for collisions with walls
-  if (newHead.x < 0 || newHead.x >= gridWidth || newHead.y < 0 || newHead.y >= gridHeight) {
-    snakePlayer1Alive = false;
-    return;
-  }
-
-  // Check for collisions with self
-  for (auto segment : snake) {
-    if (segment.x == newHead.x && segment.y == newHead.y) {
-      snakePlayer1Alive = false;
       return;
     }
-  }
-
-  // Insert new head
-  snake.insert(snake.begin(), newHead);
-
-  // Check if food is eaten
-  if (newHead.x == food.x && newHead.y == food.y) {
-    snakeScore++;
-    spawnFoodSinglePlayer();
   } else {
-    // Remove tail segment
-    snake.pop_back();
+    // Handle inputs
+    handle3DGameInputs();
+
+    // Update bullets
+    updateBullets();
+
+    // Update and draw frame at regular intervals
+    if (currentMillis - previousMillis3D >= interval3D) {
+      previousMillis3D = currentMillis;
+      drawFrame3D();
+    }
   }
 }
 
-void updateSnakeTwoPlayer() {
-  if (!snakePlayer1Alive || !snakePlayer2Alive) {
-    // Game over
-    if (!snakePlayer1Alive && snakePlayer2Alive) {
-      displaySnakeGameOver("Player 2 Wins!");
-    } else if (snakePlayer1Alive && !snakePlayer2Alive) {
-      displaySnakeGameOver("Player 1 Wins!");
+// 3D Game Functions
+void handle3DGameInputs() {
+  float moveSpeed = 0.05f; // Movement speed
+  float rotSpeed = 0.05f;  // Rotation speed
+
+  // Movement Forward/Backward
+  if (controllerData[1].command & COMMAND_UP) { // Move forward
+    float newPosX = posX + dirX * moveSpeed;
+    float newPosY = posY + dirY * moveSpeed;
+    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.' &&
+        !checkCollisionWithMonsters(newPosX, newPosY)) {
+      posX = newPosX;
+      posY = newPosY;
+    }
+  }
+  if (controllerData[1].command & COMMAND_DOWN) { // Move backward
+    float newPosX = posX - dirX * moveSpeed;
+    float newPosY = posY - dirY * moveSpeed;
+    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.' &&
+        !checkCollisionWithMonsters(newPosX, newPosY)) {
+      posX = newPosX;
+      posY = newPosY;
+    }
+  }
+
+  // Strafing Left/Right
+  if (controllerData[1].command & COMMAND_LEFT) { // Strafe left
+    float newPosX = posX - dirY * moveSpeed;
+    float newPosY = posY + dirX * moveSpeed;
+    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.' &&
+        !checkCollisionWithMonsters(newPosX, newPosY)) {
+      posX = newPosX;
+      posY = newPosY;
+    }
+  }
+  if (controllerData[1].command & COMMAND_RIGHT) { // Strafe right
+    float newPosX = posX + dirY * moveSpeed;
+    float newPosY = posY - dirX * moveSpeed;
+    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.' &&
+        !checkCollisionWithMonsters(newPosX, newPosY)) {
+      posX = newPosX;
+      posY = newPosY;
+    }
+  }
+
+  // Rotation with `b`
+  if (controllerData[1].b == -1) { // Rotate left
+    float oldDirX = dirX;
+    dirX = dirX * cos(rotSpeed) - dirY * sin(rotSpeed);
+    dirY = oldDirX * sin(rotSpeed) + dirY * cos(rotSpeed);
+    float oldPlaneX = planeX;
+    planeX = planeX * cos(rotSpeed) - planeY * sin(rotSpeed);
+    planeY = oldPlaneX * sin(rotSpeed) + planeY * cos(rotSpeed);
+  }
+  if (controllerData[1].b == 1) { // Rotate right
+    float oldDirX = dirX;
+    dirX = dirX * cos(-rotSpeed) - dirY * sin(-rotSpeed);
+    dirY = oldDirX * sin(-rotSpeed) + dirY * cos(-rotSpeed);
+    float oldPlaneX = planeX;
+    planeX = planeX * cos(-rotSpeed) - planeY * sin(-rotSpeed);
+    planeY = oldPlaneX * sin(-rotSpeed) + planeY * cos(-rotSpeed);
+  }
+
+  // Shooting with `d`
+  static bool canShoot = true;
+  if (controllerData[1].d && canShoot) { // Use `d` (select button) for shooting
+    for (int i = 0; i < maxBullets; i++) {
+      if (!bullets[i].active) {
+        bullets[i].x = posX;
+        bullets[i].y = posY;
+        bullets[i].dirX = dirX;
+        bullets[i].dirY = dirY;
+        bullets[i].active = true;
+        canShoot = false; // Prevent continuous shooting
+        break;
+      }
+    }
+  }
+  if (!controllerData[1].d) {
+    canShoot = true;
+  }
+}
+
+
+
+  // Exit to main menu (e.g., by pressing a specific button combination)
+  // Implement exit logic if needed
+
+// Function to Draw Each Frame of the 3D Game
+void drawFrame3D() {
+  // Clear the screen
+  gfx.fillScreen(0);
+
+  float ZBuffer[mode.hRes]; // Z-buffer to store wall distances
+
+  // Raycasting loop for each vertical stripe
+  for (int x = 0; x < mode.hRes; x++) {
+    // Calculate ray position and direction
+    float cameraX = 2 * x / float(mode.hRes) - 1; // x-coordinate in camera space
+    float rayDirX = dirX + planeX * cameraX;
+    float rayDirY = dirY + planeY * cameraX;
+
+    // Map position
+    int mapX = int(posX);
+    int mapY = int(posY);
+
+    // Length of ray from current position to next x or y side
+    float sideDistX;
+    float sideDistY;
+
+    // Length of ray from one x or y side to next x or y side
+    float deltaDistX = (rayDirX == 0) ? 1e30 : fabs(1 / rayDirX);
+    float deltaDistY = (rayDirY == 0) ? 1e30 : fabs(1 / rayDirY);
+    float perpWallDist;
+
+    // Direction to go in x and y (+1 or -1)
+    int stepX;
+    int stepY;
+
+    int hit = 0; // Was there a wall hit?
+    int side;    // Was a NS or EW wall hit?
+
+    // Calculate step and initial sideDist
+    if (rayDirX < 0) {
+      stepX = -1;
+      sideDistX = (posX - mapX) * deltaDistX;
     } else {
-      displaySnakeGameOver("It's a Tie!");
+      stepX = 1;
+      sideDistX = (mapX + 1.0 - posX) * deltaDistX;
     }
-    if (controllerData[1].d || controllerData[2].d) {
-      appState = MENU_MAIN;
-      displayMenuMain();
-      snakeGameInitialized = false;
-    }
-    return;
-  }
-
-  // Update Player 1
-  Point newHead1 = snake1.front();
-  switch (snakeDirection1) {
-    case 0: newHead1.y--; break;  // Up
-    case 1: newHead1.x++; break;  // Right
-    case 2: newHead1.y++; break;  // Down
-    case 3: newHead1.x--; break;  // Left
-  }
-
-  // Check for collisions with walls
-  if (newHead1.x < 0 || newHead1.x >= gridWidth || newHead1.y < 0 || newHead1.y >= gridHeight) {
-    snakePlayer1Alive = false;
-  }
-
-  // Check for collisions with self
-  for (auto segment : snake1) {
-    if (segment.x == newHead1.x && segment.y == newHead1.y) {
-      snakePlayer1Alive = false;
-    }
-  }
-
-  // Check for collisions with other player
-  for (auto segment : snake2) {
-    if (segment.x == newHead1.x && segment.y == newHead1.y) {
-      snakePlayer1Alive = false;
-    }
-  }
-
-  if (snakePlayer1Alive) {
-    // Insert new head
-    snake1.insert(snake1.begin(), newHead1);
-
-    // Check if food is eaten
-    if (newHead1.x == food1.x && newHead1.y == food1.y) {
-      snakeScore1++;
-      spawnFoodTwoPlayer();
+    if (rayDirY < 0) {
+      stepY = -1;
+      sideDistY = (posY - mapY) * deltaDistY;
     } else {
-      // Remove tail segment
-      snake1.pop_back();
+      stepY = 1;
+      sideDistY = (mapY + 1.0 - posY) * deltaDistY;
     }
-  }
 
-  // Update Player 2
-  Point newHead2 = snake2.front();
-  switch (snakeDirection2) {
-    case 0: newHead2.y--; break;  // Up
-    case 1: newHead2.x++; break;  // Right
-    case 2: newHead2.y++; break;  // Down
-    case 3: newHead2.x--; break;  // Left
-  }
-
-  // Check for collisions with walls
-  if (newHead2.x < 0 || newHead2.x >= gridWidth || newHead2.y < 0 || newHead2.y >= gridHeight) {
-    snakePlayer2Alive = false;
-  }
-
-  // Check for collisions with self
-  for (auto segment : snake2) {
-    if (segment.x == newHead2.x && segment.y == newHead2.y) {
-      snakePlayer2Alive = false;
+    // Perform DDA
+    while (hit == 0) {
+      // Jump to next map square in x or y direction
+      if (sideDistX < sideDistY) {
+        sideDistX += deltaDistX;
+        mapX += stepX;
+        side = 0;
+      } else {
+        sideDistY += deltaDistY;
+        mapY += stepY;
+        side = 1;
+      }
+      // Check if ray has hit a wall
+      if (worldMap3D[mapY * mapWidth3D + mapX] == '#') hit = 1;
     }
-  }
 
-  // Check for collisions with other player
-  for (auto segment : snake1) {
-    if (segment.x == newHead2.x && segment.y == newHead2.y) {
-      snakePlayer2Alive = false;
+    // Calculate distance projected on camera direction
+    if (side == 0)
+      perpWallDist = (sideDistX - deltaDistX);
+    else
+      perpWallDist = (sideDistY - deltaDistY);
+
+    // Calculate height of line to draw on screen
+    int lineHeight = (int)(mode.vRes / perpWallDist);
+
+    // Calculate lowest and highest pixel to fill in current stripe
+    int drawStart = -lineHeight / 2 + mode.vRes / 2;
+    if (drawStart < 0) drawStart = 0;
+    int drawEnd = lineHeight / 2 + mode.vRes / 2;
+    if (drawEnd >= mode.vRes) drawEnd = mode.vRes - 1;
+
+    // Choose wall color
+    uint16_t color = 0xF800; // Red walls
+
+    // Give x and y sides different brightness
+    if (side == 1) {
+      color = color >> 1; // Darken color
     }
+
+    // Draw the pixels of the stripe as a vertical line
+    gfx.drawFastVLine(x, drawStart, drawEnd - drawStart, color);
+
+    // Store the perpendicular wall distance for the Z-buffer
+    ZBuffer[x] = perpWallDist;
   }
 
-  if (snakePlayer2Alive) {
-    // Insert new head
-    snake2.insert(snake2.begin(), newHead2);
-
-    // Check if food is eaten
-    if (newHead2.x == food2.x && newHead2.y == food2.y) {
-      snakeScore2++;
-      spawnFoodTwoPlayer();
-    } else {
-      // Remove tail segment
-      snake2.pop_back();
-    }
-  }
+  // Render monsters and bullets
+  renderMonsters(ZBuffer);
+  renderBullets();
 }
 
-void drawSnakeGameSinglePlayer() {
-  gfx.fillScreen(blackColor);
-
-  // Draw the food
-  gfx.fillRect(food.x * gridSize, food.y * gridSize, gridSize, gridSize, redColor);
-
-  // Draw the snake
-  for (auto segment : snake) {
-    gfx.fillRect(segment.x * gridSize, segment.y * gridSize, gridSize, gridSize, greenColor);
-  }
-
-  // Draw the score
-  gfx.setTextColor(whiteColor);
-  gfx.setTextSize(1);
-  gfx.setCursor(5, 5);
-  gfx.print("Score: ");
-  gfx.print(snakeScore);
-}
-
-void drawSnakeGameTwoPlayer() {
-  gfx.fillScreen(blackColor);
-
-  // Draw dividing line
-  gfx.drawFastHLine(0, screenHeight / 2, screenWidth, whiteColor);
-
-  // Player 1 area (top half)
-  if (snakePlayer1Alive) {
-    // Draw the food
-    gfx.fillRect(food1.x * gridSize, food1.y * gridSize, gridSize, gridSize, redColor);
-
-    // Draw the snake
-    for (auto segment : snake1) {
-      gfx.fillRect(segment.x * gridSize, segment.y * gridSize, gridSize, gridSize, greenColor);
-    }
-
-    // Draw the score
-    gfx.setTextColor(whiteColor);
-    gfx.setTextSize(1);
-    gfx.setCursor(5, 5);
-    gfx.print("P1 Score: ");
-    gfx.print(snakeScore1);
-  }
-
-  // Player 2 area (bottom half)
-  if (snakePlayer2Alive) {
-    // Adjust coordinates for bottom half
-    int yOffset = screenHeight / 2;
-
-    // Draw the food
-    gfx.fillRect(food2.x * gridSize, food2.y * gridSize + yOffset, gridSize, gridSize, redColor);
-
-    // Draw the snake
-    for (auto segment : snake2) {
-      gfx.fillRect(segment.x * gridSize, segment.y * gridSize + yOffset, gridSize, gridSize, blueColor);
-    }
-
-    // Draw the score
-    gfx.setTextColor(whiteColor);
-    gfx.setTextSize(1);
-    gfx.setCursor(5, screenHeight / 2 + 5);
-    gfx.print("P2 Score: ");
-    gfx.print(snakeScore2);
-  }
-}
-
-void displaySnakeGameOver(const char* message) {
+// Function to Display Game Over Screen for 3D Game
+void display3DGameOverScreen() {
   gfx.fillScreen(blackColor);
   gfx.setTextColor(whiteColor);
   gfx.setTextSize(2);
-  gfx.setCursor(screenWidth / 2 - 80, screenHeight / 2 - 20);
-  gfx.print(message);
+  gfx.setCursor(mode.hRes / 2 - 60, mode.vRes / 2 - 20);
+  gfx.print("GAME OVER");
   gfx.setTextSize(1);
-  gfx.setCursor(screenWidth / 2 - 80, screenHeight / 2 + 10);
+  gfx.setCursor(mode.hRes / 2 - 70, mode.vRes / 2 + 10);
   gfx.print("Press Select to return");
 }
 
-void spawnFoodSinglePlayer() {
-  bool validPosition = false;
-  while (!validPosition) {
-    food.x = random(0, gridWidth);
-    food.y = random(0, gridHeight);
+// Function to Initialize Monsters
+void initializeMonsters() {
+  // Clear all monsters
+  for (int i = 0; i < maxMonsters; i++) {
+    monsters[i].alive = false;
+  }
 
-    // Ensure food is not on the snake
-    validPosition = true;
-    for (auto segment : snake) {
-      if (segment.x == food.x && segment.y == food.y) {
-        validPosition = false;
-        break;
+  // Example positions for monsters
+  monsters[0] = { 10.5f, 7.5f, true };
+  monsters[1] = { 12.5f, 5.5f, true };
+  monsters[2] = { 7.5f, 12.5f, true };
+  // Add more monsters as needed
+}
+
+// Function to Update Bullets
+void updateBullets() {
+  float bulletSpeed = 0.1f;
+  for (int i = 0; i < maxBullets; i++) {
+    if (bullets[i].active) {
+      bullets[i].x += bullets[i].dirX * bulletSpeed;
+      bullets[i].y += bullets[i].dirY * bulletSpeed;
+
+      // Check if bullet hits a wall
+      if (worldMap3D[int(bullets[i].y) * mapWidth3D + int(bullets[i].x)] == '#') {
+        bullets[i].active = false;
+      }
+
+      // Check for collision with monsters
+      for (int j = 0; j < maxMonsters; j++) {
+        if (monsters[j].alive) {
+          float dx = bullets[i].x - monsters[j].x;
+          float dy = bullets[i].y - monsters[j].y;
+          float distance = sqrt(dx * dx + dy * dy);
+          if (distance < 0.5f) { // Collision threshold
+            monsters[j].alive = false;
+            bullets[i].active = false;
+            // Check if all monsters are defeated
+            bool allDefeated = true;
+            for (int k = 0; k < maxMonsters; k++) {
+              if (monsters[k].alive) {
+                allDefeated = false;
+                break;
+              }
+            }
+            if (allDefeated) {
+              gameState3D = GAME_OVER_3D;
+            }
+            break;
+          }
+        }
       }
     }
   }
 }
 
-void spawnFoodTwoPlayer() {
-  // Food for Player 1
-  bool validPosition1 = false;
-  while (!validPosition1) {
-    food1.x = random(0, gridWidth);
-    food1.y = random(0, gridHeight / 2);
-
-    // Ensure food is not on the snake
-    validPosition1 = true;
-    for (auto segment : snake1) {
-      if (segment.x == food1.x && segment.y == food1.y) {
-        validPosition1 = false;
-        break;
+// Function to Check Collision with Monsters
+bool checkCollisionWithMonsters(float x, float y) {
+  for (int i = 0; i < maxMonsters; i++) {
+    if (monsters[i].alive) {
+      float dx = x - monsters[i].x;
+      float dy = y - monsters[i].y;
+      float distance = sqrt(dx * dx + dy * dy);
+      if (distance < 0.5f) { // Collision threshold
+        return true; // Collision detected
       }
     }
   }
+  return false; // No collision
+}
 
-  // Food for Player 2
-  bool validPosition2 = false;
-  while (!validPosition2) {
-    food2.x = random(0, gridWidth);
-    food2.y = random(gridHeight / 2, gridHeight);
+// Function to Render Monsters
+void renderMonsters(float ZBuffer[]) {
+  for (int i = 0; i < maxMonsters; i++) {
+    if (monsters[i].alive) {
+      // Translate sprite position relative to camera
+      float spriteX = monsters[i].x - posX;
+      float spriteY = monsters[i].y - posY;
 
-    // Ensure food is not on the snake
-    validPosition2 = true;
-    for (auto segment : snake2) {
-      if (segment.x == food2.x && segment.y == food2.y) {
-        validPosition2 = false;
-        break;
+      // Calculate inverse determinant for correct matrix multiplication
+      float invDet = 1.0f / (planeX * dirY - dirX * planeY);
+
+      // Transform sprite with the inverse camera matrix
+      float transformX = invDet * (dirY * spriteX - dirX * spriteY);
+      float transformY = invDet * (-planeY * spriteX + planeX * spriteY);
+
+      // Check if sprite is in front of camera plane
+      if (transformY <= 0) continue;
+
+      // Calculate sprite screen position
+      int spriteScreenX = int((mode.hRes / 2) * (1 + transformX / transformY));
+
+      // Calculate sprite dimensions
+      int spriteHeight = abs(int(mode.vRes / transformY));
+      int spriteWidth = spriteHeight / 2; // For 1:1:2 ratio
+
+      // Calculate drawing boundaries
+      int drawStartY = -spriteHeight / 2 + mode.vRes / 2;
+      int drawEndY = spriteHeight / 2 + mode.vRes / 2;
+      int drawStartX = -spriteWidth / 2 + spriteScreenX;
+      int drawEndX = spriteWidth / 2 + spriteScreenX;
+
+      // Skip rendering if the sprite is completely off-screen
+      if (drawEndX < 0 || drawStartX >= mode.hRes) continue;
+
+      // Clamp drawing coordinates to screen boundaries
+      if (drawStartY < 0) drawStartY = 0;
+      if (drawEndY >= mode.vRes) drawEndY = mode.vRes - 1;
+      if (drawStartX < 0) drawStartX = 0;
+      if (drawEndX >= mode.hRes) drawEndX = mode.hRes - 1;
+
+      // Loop through every vertical stripe of the sprite on screen
+      for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
+        if (transformY < ZBuffer[stripe]) {
+          // Calculate the proportion of the stripe within the sprite width
+          float texX = float(stripe - drawStartX) / float(drawEndX - drawStartX);
+
+          // Determine color based on texX (simple shading)
+          uint16_t color;
+          if (texX < 0.25f || texX > 0.75f) {
+            color = 0xF81F; // Pink side walls
+          } else {
+            color = 0x001F; // Blue front face
+          }
+
+          // Draw vertical line for the sprite
+          gfx.drawFastVLine(stripe, drawStartY, drawEndY - drawStartY, color);
+
+          // Optionally draw top
+          if (stripe == (drawStartX + drawEndX) / 2) {
+            gfx.drawPixel(stripe, drawStartY, 0xF81F); // Pink top pixel
+          }
+        }
+      }
+    }
+  }
+}
+
+// Function to Render Bullets
+void renderBullets() {
+  for (int i = 0; i < maxBullets; i++) {
+    if (bullets[i].active) {
+      // Translate bullet position to relative to camera
+      float bulletX = bullets[i].x - posX;
+      float bulletY = bullets[i].y - posY;
+
+      // Transform to camera space
+      float invDet = 1.0f / (planeX * dirY - dirX * planeY);
+      float transformX = invDet * (dirY * bulletX - dirX * bulletY);
+      float transformY = invDet * (-planeY * bulletX + planeX * bulletY);
+
+      if (transformY <= 0.1f) continue; // Bullet behind the player or too close
+
+      int bulletScreenX = int((mode.hRes / 2) * (1 + transformX / transformY));
+
+      // Bullet dimensions
+      int bulletHeight = abs(int(mode.vRes / transformY)) / 4; // Smaller than monsters
+      int drawStartY = -bulletHeight / 2 + mode.vRes / 2;
+      if (drawStartY < 0) drawStartY = 0;
+      int drawEndY = bulletHeight / 2 + mode.vRes / 2;
+      if (drawEndY >= mode.vRes) drawEndY = mode.vRes - 1;
+
+      int bulletWidth = bulletHeight;
+      int drawStartX = -bulletWidth / 2 + bulletScreenX;
+      if (drawStartX < 0) drawStartX = 0;
+      int drawEndX = bulletWidth / 2 + bulletScreenX;
+      if (drawEndX >= mode.hRes) drawEndX = mode.hRes - 1;
+
+      // Draw the bullet
+      for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
+        if (stripe > 0 && stripe < mode.hRes) {
+          // Draw vertical line for the bullet
+          gfx.drawFastVLine(stripe, drawStartY, drawEndY - drawStartY, 0xFFE0); // Yellow color
+        }
       }
     }
   }
