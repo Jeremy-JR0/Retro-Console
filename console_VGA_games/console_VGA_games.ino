@@ -5,6 +5,10 @@
 #include <map>
 #include <string.h> // For strcmp
 #include <math.h>   // For math functions
+#include <SD.h>     // Include the SD library
+#include <SPI.h>    // Include the SPI library
+#include <vector>
+
 
 // Joystick Command Definitions
 #define COMMAND_NO     0x00
@@ -52,7 +56,10 @@ enum AppState {
   STARTUP, 
   MENU_MAIN, 
   MENU_PLAYER_COUNT,
-  GAME_RUNNING
+  MENU_LEADERBOARD,
+  GAME_RUNNING,
+  DISPLAY_LEADERBOARD,
+  NAME_ENTRY
 };
 AppState appState = STARTUP;
 
@@ -69,7 +76,7 @@ std::map<String, int> controllerMap;  // Key: MAC address string, Value: Control
 const char* mainMenuItems[] = {"Pong", "Snake", "Flappy Bird", "Doom"};
 const int totalMainMenuItems = sizeof(mainMenuItems) / sizeof(mainMenuItems[0]);
 
-const char* playerCountMenuItems[] = {"Single Player", "Two Player"};
+const char* playerCountMenuItems[] = {"Single Player", "Two Player", "Leaderboard"};
 const int totalPlayerCountMenuItems = sizeof(playerCountMenuItems) / sizeof(playerCountMenuItems[0]);
 
 int currentMainMenuItem = 0;       // Current selection in the main menu
@@ -102,6 +109,12 @@ uint16_t ballColor = 0xFFFF;
 
 int screenWidth;
 int screenHeight;
+
+// =========================
+// SD Card Configuration
+// =========================
+
+#define SD_CS_PIN 10  // Chip Select pin for SD card
 
 // =========================
 // Function Declarations
@@ -156,6 +169,12 @@ void drawFrame3D();
 void handle3DGameInputs();
 void display3DGameOverScreen();
 
+// Leaderboard Functions
+void displayLeaderboard(const char* gameName);
+void updateLeaderboard(const char* gameName, int score);
+void enterPlayerName(char* playerName);
+void displayKeyboard(char* playerName, int maxLength);
+
 // =========================
 // Game Variables (Pong)
 // =========================
@@ -198,6 +217,12 @@ bool collisionOccurred = false;
 unsigned long previousMillis = 0;      // Store the last time the ball position was updated
 const long interval = 16;              // Update interval in milliseconds (approx. 60 updates per second)
 unsigned long collisionCooldown = 0;   // Cooldown timer to prevent repeated collisions
+
+// Flag to check if high score was achieved
+bool newHighScore = false;
+
+// Player name
+char playerName[4];  // 3 characters + null terminator
 
 // =========================
 // Flappy Bird Game Variables
@@ -310,6 +335,9 @@ Bullet bullets[maxBullets];
 enum GameState3D { GAME_PLAYING_3D, GAME_OVER_3D };
 GameState3D gameState3D = GAME_PLAYING_3D;
 
+// Flag to check if high score was achieved in Flappy Bird
+bool fbNewHighScore = false;
+
 // =========================
 // Setup Function
 // =========================
@@ -347,7 +375,18 @@ void setup() {
   // Register the callback function for receiving data
   esp_now_register_recv_cb(OnDataRecv);
 
+  // Initialize SD card
+  if (!SD.begin(SD_CS_PIN)) {
+    gfx.fillScreen(blackColor);
+    gfx.setTextColor(whiteColor);
+    gfx.setCursor(10, 60);
+    gfx.println("SD Card Init Failed");
+    vga.show();
+    while (1) delay(1); // Halt if SD card fails to initialize
+  }
+
   // Display startup screen
+  startupStartTime = millis();
   displayStartupScreen();
 }
 
@@ -362,6 +401,7 @@ void loop() {
     case STARTUP:
       if (currentMillis - startupStartTime >= startupDuration) {
         appState = MENU_MAIN;
+        displayMenuMain();
       } else {
         // Keep displaying the startup screen
         displayStartupScreen();
@@ -376,6 +416,15 @@ void loop() {
     case MENU_PLAYER_COUNT:
       // Continuously display the player count menu to prevent flickering
       displayMenuPlayerCount();
+      break;
+
+    case DISPLAY_LEADERBOARD:
+      displayLeaderboard(selectedGame);
+      break;
+
+    case NAME_ENTRY:
+      // Handle name entry for high score
+      enterPlayerName(playerName);
       break;
 
     case GAME_RUNNING:
@@ -437,14 +486,9 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
       Serial.print("Selected Game: ");
       Serial.println(selectedGame);
 
-      // Transition to player count selection if needed
-      if (strcmp(selectedGame, "Pong") == 0 || 
-          strcmp(selectedGame, "Snake") == 0 || 
-          strcmp(selectedGame, "Flappy Bird") == 0 ||
-          strcmp(selectedGame, "Doom") == 0) {
-        appState = MENU_PLAYER_COUNT;
-        currentPlayerCountItem = 0; // Reset player count selection
-      }
+      // Transition to player count selection
+      appState = MENU_PLAYER_COUNT;
+      currentPlayerCountItem = 0; // Reset player count selection
     } else {
       // Handle navigation
       if (data.b == 1) { // Move down
@@ -459,34 +503,41 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     if (data.d) { // Select button pressed
       // Handle selection based on currentPlayerCountItem
       const char* playerCount = playerCountMenuItems[currentPlayerCountItem];
-      Serial.print("Selected Player Count: ");
+      Serial.print("Selected Option: ");
       Serial.println(playerCount);
-      // Implement action based on selectedGame and playerCount
-      appState = GAME_RUNNING;
-      // Initialize game variables here if needed
-      if (strcmp(selectedGame, "Pong") == 0) {
-        // Reset game variables
-        playerScore = 0;
-        aiScore = 0;
-        serve = true;
-        playerServe = true;
-        gameState = GAME_PLAYING;
-        resetBall();
-      }
-      else if (strcmp(selectedGame, "Flappy Bird") == 0) {
-        // Reset Flappy Bird game
-        resetFlappyBirdGame(currentPlayerCountItem == 0);
-      }
-      else if (strcmp(selectedGame, "Doom") == 0) {
-        // Initialize 3D game variables
-        posX = 8.0f;
-        posY = 8.0f;
-        dirX = -1.0f;
-        dirY = 0.0f;
-        planeX = 0.0f;
-        planeY = 0.66f;
-        initializeMonsters();
-        gameState3D = GAME_PLAYING_3D;
+
+      if (strcmp(playerCount, "Leaderboard") == 0) {
+        appState = DISPLAY_LEADERBOARD;
+      } else {
+        // Implement action based on selectedGame and playerCount
+        appState = GAME_RUNNING;
+        // Initialize game variables here if needed
+        if (strcmp(selectedGame, "Pong") == 0) {
+          // Reset game variables
+          playerScore = 0;
+          aiScore = 0;
+          serve = true;
+          playerServe = true;
+          gameState = GAME_PLAYING;
+          resetBall();
+          newHighScore = false;
+        }
+        else if (strcmp(selectedGame, "Flappy Bird") == 0) {
+          // Reset Flappy Bird game
+          resetFlappyBirdGame(currentPlayerCountItem == 0);
+          fbNewHighScore = false;
+        }
+        else if (strcmp(selectedGame, "Doom") == 0) {
+          // Initialize 3D game variables
+          posX = 8.0f;
+          posY = 8.0f;
+          dirX = -1.0f;
+          dirY = 0.0f;
+          planeX = 0.0f;
+          planeY = 0.66f;
+          initializeMonsters();
+          gameState3D = GAME_PLAYING_3D;
+        }
       }
     } else {
       // Handle navigation
@@ -496,6 +547,15 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
         currentPlayerCountItem = (currentPlayerCountItem - 1 + totalPlayerCountMenuItems) % totalPlayerCountMenuItems;
       }
     }
+  }
+  else if (appState == DISPLAY_LEADERBOARD) {
+    if (data.d) { // Press select to return
+      appState = MENU_PLAYER_COUNT;
+    }
+  }
+  else if (appState == NAME_ENTRY) {
+    // Handle name entry inputs
+    // Implementation will be in enterPlayerName function
   }
   else if (appState == GAME_RUNNING) {
     // Game is running, inputs are handled within the game functions
@@ -581,7 +641,8 @@ void displayMenuPlayerCount() {
 
   // Header
   gfx.setCursor(10, 10);
-  gfx.println("Select Mode:");
+  gfx.print("Options for ");
+  gfx.println(selectedGame);
 
   // Menu Items
   for (int i = 0; i < totalPlayerCountMenuItems; i++) {
@@ -613,6 +674,10 @@ void runSelectedGame() {
     bool isSinglePlayer = (currentPlayerCountItem == 0);
     runPong(isSinglePlayer);
   }
+  else if (strcmp(selectedGame, "Snake") == 0) {
+    bool isSinglePlayer = (currentPlayerCountItem == 0);
+    runSnake(isSinglePlayer);
+  }
   else if (strcmp(selectedGame, "Flappy Bird") == 0) {
     bool isSinglePlayer = (currentPlayerCountItem == 0);
     runFlappyBird(isSinglePlayer);
@@ -629,6 +694,11 @@ void runPong(bool isSinglePlayer) {
 
   if (gameState == GAME_OVER) {
     displayWinMessage(playerScore >= maxScore ? "Player 1 Wins!" : isSinglePlayer ? "AI Wins!" : "Player 2 Wins!");
+    if (!newHighScore && playerScore >= maxScore) {
+      // Check for high score
+      updateLeaderboard("Pong", playerScore);
+      newHighScore = true;
+    }
     if (controllerData[1].d) {  // Button press to return to menu
       delay(200);
       appState = MENU_MAIN;
@@ -879,12 +949,226 @@ void displayWinMessage(const char* winner) {
   gfx.setTextSize(2);
   gfx.setCursor(mode.hRes / 2 - 60, mode.vRes / 2 - 20);
   gfx.print(winner);
-  gfx.setTextSize(1);
-  gfx.setCursor(mode.hRes / 2 - 40, mode.vRes / 2 + 10);
-  gfx.print("Press Select");
-  gfx.setCursor(mode.hRes / 2 - 20, mode.vRes / 2 + 20);
-  gfx.print("to return");
+
+  if (playerScore >= maxScore && !newHighScore && currentPlayerCountItem == 0) {
+    gfx.setTextSize(1);
+    gfx.setCursor(mode.hRes / 2 - 50, mode.vRes / 2 + 10);
+    gfx.print("New High Score!");
+    gfx.setCursor(mode.hRes / 2 - 70, mode.vRes / 2 + 20);
+    gfx.print("Press Select to Save");
+    if (controllerData[1].d) {
+      appState = NAME_ENTRY;
+    }
+  } else {
+    gfx.setTextSize(1);
+    gfx.setCursor(mode.hRes / 2 - 40, mode.vRes / 2 + 10);
+    gfx.print("Press Select");
+    gfx.setCursor(mode.hRes / 2 - 20, mode.vRes / 2 + 20);
+    gfx.print("to return");
+  }
   vga.show();
+}
+
+// =========================
+// Game Variables (Snake)
+// =========================
+
+// Snake properties
+struct SnakeSegment {
+  int x;
+  int y;
+};
+std::vector<SnakeSegment> snake;
+int snakeDirection = COMMAND_RIGHT; // Initial direction
+int snakeSpeed = 100; // Delay between moves in milliseconds
+unsigned long lastMoveTime = 0;
+
+// Food properties
+int foodX = 0;
+int foodY = 0;
+
+// Game state
+bool snakeGameInitialized = false;
+bool snakeGameOver = false;
+int snakeScore = 0;
+bool newSnakeHighScore = false;
+
+// Grid size
+const int gridSize = 10; // Each grid cell is 10x10 pixels
+
+// Colors for Snake game
+uint16_t snakeColor = 0x07E0; // Green
+uint16_t foodColor = 0xF800;  // Red
+
+// =========================
+// Snake Game Functions
+// =========================
+
+void runSnake(bool isSinglePlayer) {
+  unsigned long currentMillis = millis();
+
+  if (!snakeGameInitialized) {
+    resetSnakeGame(isSinglePlayer);
+  }
+
+  if (snakeGameOver) {
+    // Check for high score
+    if (!newSnakeHighScore) {
+      updateLeaderboard("Snake", snakeScore);
+      newSnakeHighScore = true;
+    }
+
+    // Display Game Over Screen
+    gfx.fillScreen(blackColor);
+    gfx.setTextColor(whiteColor);
+    gfx.setTextSize(2);
+    gfx.setCursor(screenWidth / 2 - 60, screenHeight / 2 - 20);
+    gfx.print("Game Over!");
+    gfx.setTextSize(1);
+    gfx.setCursor(screenWidth / 2 - 50, screenHeight / 2 + 10);
+    gfx.print("Score: ");
+    gfx.print(snakeScore);
+
+    if (newSnakeHighScore) {
+      gfx.setCursor(screenWidth / 2 - 70, screenHeight / 2 + 20);
+      gfx.print("New High Score!");
+      gfx.setCursor(screenWidth / 2 - 80, screenHeight / 2 + 30);
+      gfx.print("Press Select to Save");
+      if (controllerData[1].d) {
+        appState = NAME_ENTRY;
+      }
+    } else {
+      gfx.setCursor(screenWidth / 2 - 70, screenHeight / 2 + 20);
+      gfx.print("Press Select to return");
+      if (controllerData[1].d) {
+        appState = MENU_MAIN;
+        displayMenuMain();
+        snakeGameInitialized = false;
+      }
+    }
+    return;
+  }
+
+  if (currentMillis - lastMoveTime >= snakeSpeed) {
+    lastMoveTime = currentMillis;
+    handleSnakeInput();
+    updateSnake();
+    checkSnakeCollision();
+    drawSnakeGame();
+  }
+}
+
+void resetSnakeGame(bool isSinglePlayer) {
+  snake.clear();
+  SnakeSegment head;
+  head.x = (screenWidth / 2 / gridSize) * gridSize;
+  head.y = (screenHeight / 2 / gridSize) * gridSize;
+  snake.push_back(head);
+
+  snakeDirection = COMMAND_RIGHT;
+  snakeGameOver = false;
+  snakeGameInitialized = true;
+  snakeScore = 0;
+  newSnakeHighScore = false;
+
+  generateFood();
+}
+
+void handleSnakeInput() {
+  int newDirection = snakeDirection;
+  if (controllerData[1].command & COMMAND_UP && snakeDirection != COMMAND_DOWN) {
+    newDirection = COMMAND_UP;
+  }
+  else if (controllerData[1].command & COMMAND_DOWN && snakeDirection != COMMAND_UP) {
+    newDirection = COMMAND_DOWN;
+  }
+  else if (controllerData[1].command & COMMAND_LEFT && snakeDirection != COMMAND_RIGHT) {
+    newDirection = COMMAND_LEFT;
+  }
+  else if (controllerData[1].command & COMMAND_RIGHT && snakeDirection != COMMAND_LEFT) {
+    newDirection = COMMAND_RIGHT;
+  }
+  snakeDirection = newDirection;
+}
+
+void updateSnake() {
+  // Move the snake
+  SnakeSegment newHead = snake.front();
+  switch (snakeDirection) {
+    case COMMAND_UP:
+      newHead.y -= gridSize;
+      break;
+    case COMMAND_DOWN:
+      newHead.y += gridSize;
+      break;
+    case COMMAND_LEFT:
+      newHead.x -= gridSize;
+      break;
+    case COMMAND_RIGHT:
+      newHead.x += gridSize;
+      break;
+  }
+
+  // Add new head
+  snake.insert(snake.begin(), newHead);
+
+  // Check if food is eaten
+  if (newHead.x == foodX && newHead.y == foodY) {
+    snakeScore++;
+    generateFood();
+  } else {
+    // Remove tail
+    snake.pop_back();
+  }
+}
+
+void checkSnakeCollision() {
+  SnakeSegment head = snake.front();
+
+  // Check wall collision
+  if (head.x < 0 || head.x >= screenWidth || head.y < 0 || head.y >= screenHeight) {
+    snakeGameOver = true;
+    return;
+  }
+
+  // Check self collision
+  for (size_t i = 1; i < snake.size(); i++) {
+    if (head.x == snake[i].x && head.y == snake[i].y) {
+      snakeGameOver = true;
+      return;
+    }
+  }
+}
+
+void drawSnakeGame() {
+  gfx.fillScreen(blackColor);
+
+  // Draw food
+  gfx.fillRect(foodX, foodY, gridSize, gridSize, foodColor);
+
+  // Draw snake
+  for (const auto& segment : snake) {
+    gfx.fillRect(segment.x, segment.y, gridSize, gridSize, snakeColor);
+  }
+
+  // Draw score
+  gfx.setTextColor(whiteColor);
+  gfx.setCursor(10, 10);
+  gfx.print("Score: ");
+  gfx.print(snakeScore);
+}
+
+void generateFood() {
+  foodX = random(screenWidth / gridSize) * gridSize;
+  foodY = random(screenHeight / gridSize) * gridSize;
+
+  // Ensure food does not appear on the snake
+  for (const auto& segment : snake) {
+    if (foodX == segment.x && foodY == segment.y) {
+      generateFood();
+      break;
+    }
+  }
 }
 
 // =========================
@@ -900,7 +1184,7 @@ void resetFlappyBirdGame(bool isSinglePlayer) {
 
   fbPipeSpeed = 2;
   fbGravity = 0.3f;
-  fbJumpStrength = -6.0f;
+  fbJumpStrength = -4.0f;
   fbPipeGapSize = 60;
 
   if (fbIsSinglePlayer) {
@@ -954,7 +1238,7 @@ void runFlappyBird(bool isSinglePlayer) {
 
 void runFlappyBirdSinglePlayer() {
   // Process input
-  if (controllerData[1].b) { // Use Button 2 to jump
+  if (controllerData[1].d) { // Use Select button to jump
     fbBirdSpeedY = fbJumpStrength;
   }
 
@@ -977,20 +1261,37 @@ void runFlappyBirdSinglePlayer() {
   drawFlappyBirdGameSinglePlayer();
 
   if (fbCollision) {
+    // Check for high score
+    if (!fbNewHighScore) {
+      updateLeaderboard("Flappy Bird", fbScore);
+      fbNewHighScore = true;
+    }
+
     // Game over
     gfx.fillScreen(blackColor);
     gfx.setTextColor(whiteColor);
     gfx.setTextSize(2);
     gfx.setCursor(fbScreenWidth / 2 - 60, fbScreenHeight / 2 - 20);
     gfx.print("Game Over!");
-    gfx.setTextSize(1);
-    gfx.setCursor(fbScreenWidth / 2 - 80, fbScreenHeight / 2 + 10);
-    gfx.print("Press Select to return");
-    if (controllerData[1].d) {
-      // Return to main menu
-      appState = MENU_MAIN;
-      displayMenuMain();
-      fbGameInitialized = false;
+    if (fbNewHighScore) {
+      gfx.setTextSize(1);
+      gfx.setCursor(fbScreenWidth / 2 - 70, fbScreenHeight / 2 + 10);
+      gfx.print("New High Score!");
+      gfx.setCursor(fbScreenWidth / 2 - 80, fbScreenHeight / 2 + 20);
+      gfx.print("Press Select to Save");
+      if (controllerData[1].d) {
+        appState = NAME_ENTRY;
+      }
+    } else {
+      gfx.setTextSize(1);
+      gfx.setCursor(fbScreenWidth / 2 - 80, fbScreenHeight / 2 + 10);
+      gfx.print("Press Select to return");
+      if (controllerData[1].d) {
+        // Return to main menu
+        appState = MENU_MAIN;
+        displayMenuMain();
+        fbGameInitialized = false;
+      }
     }
   }
 }
@@ -1230,7 +1531,7 @@ void handle3DGameInputs() {
     }
   }
 
-  // Rotation with `b`
+  // Rotation with b
   if (controllerData[1].b == -1) { // Rotate left
     float oldDirX = dirX;
     dirX = dirX * cos(rotSpeed) - dirY * sin(rotSpeed);
@@ -1248,9 +1549,9 @@ void handle3DGameInputs() {
     planeY = oldPlaneX * sin(-rotSpeed) + planeY * cos(-rotSpeed);
   }
 
-  // Shooting with `d`
+  // Shooting with d
   static bool canShoot = true;
-  if (controllerData[1].d && canShoot) { // Use `d` (select button) for shooting
+  if (controllerData[1].d && canShoot) { // Use d (select button) for shooting
     for (int i = 0; i < maxBullets; i++) {
       if (!bullets[i].active) {
         bullets[i].x = posX;
@@ -1561,6 +1862,261 @@ void renderBullets() {
         }
       }
     }
+  }
+}
+
+// =========================
+// Leaderboard Functions
+// =========================
+
+void displayLeaderboard(const char* gameName) {
+  gfx.fillScreen(blackColor);
+  gfx.setTextColor(whiteColor);
+  gfx.setTextSize(2);
+  gfx.setCursor(10, 10);
+  gfx.print(gameName);
+  gfx.print(" Leaderboard");
+
+  // Construct filename
+  String filename = "/";
+  if (strcmp(gameName, "Pong") == 0) {
+    filename += "pongLeaderboard.txt";
+  } else if (strcmp(gameName, "Snake") == 0) {
+    filename += "snakeLeaderboard.txt";
+  } else if (strcmp(gameName, "Flappy Bird") == 0) {
+    filename += "flappyBirdLeaderboard.txt";
+  } else if (strcmp(gameName, "Doom") == 0) {
+    filename += "doomLeaderboard.txt";
+  } else {
+    filename += "leaderboard.txt"; // Default filename
+  }
+
+  // Open file
+  File file = SD.open(filename);
+  if (!file) {
+    gfx.setCursor(10, 50);
+    gfx.print("No leaderboard data.");
+  } else {
+    int y = 50;
+    int rank = 1;
+    gfx.setTextSize(1);
+    while (file.available() && rank <= 10) {
+      String line = file.readStringUntil('\n');
+      gfx.setCursor(10, y);
+      gfx.print(rank);
+      gfx.print(". ");
+      gfx.print(line);
+      y += 15;
+      rank++;
+    }
+    file.close();
+  }
+
+  gfx.setCursor(10, screenHeight - 20);
+  gfx.print("Press Select to return");
+}
+
+void updateLeaderboard(const char* gameName, int score) {
+  // Construct filename
+  String filename = "/";
+  if (strcmp(gameName, "Pong") == 0) {
+    filename += "pongLeaderboard.txt";
+  } else if (strcmp(gameName, "Snake") == 0) {
+    filename += "snakeLeaderboard.txt";
+  } else if (strcmp(gameName, "Flappy Bird") == 0) {
+    filename += "flappyBirdLeaderboard.txt";
+  } else if (strcmp(gameName, "Doom") == 0) {
+    filename += "doomLeaderboard.txt";
+  } else {
+    filename += "leaderboard.txt"; // Default filename
+  }
+
+  // Read existing leaderboard
+  struct ScoreEntry {
+    String name;
+    int score;
+  };
+
+  ScoreEntry entries[10];
+  int entryCount = 0;
+
+  File file = SD.open(filename);
+  if (file) {
+    while (file.available() && entryCount < 10) {
+      String line = file.readStringUntil('\n');
+      int separatorIndex = line.indexOf(' ');
+      if (separatorIndex > 0) {
+        entries[entryCount].name = line.substring(0, separatorIndex);
+        entries[entryCount].score = line.substring(separatorIndex + 1).toInt();
+        entryCount++;
+      }
+    }
+    file.close();
+  }
+
+  // Check if current score qualifies for top 10
+  bool qualifies = false;
+  if (entryCount < 10) {
+    qualifies = true;
+  } else {
+    for (int i = 0; i < entryCount; i++) {
+      if (score > entries[i].score) {
+        qualifies = true;
+        break;
+      }
+    }
+  }
+
+  if (qualifies) {
+    // Set flag to enter player name
+    appState = NAME_ENTRY;
+  }
+}
+
+void enterPlayerName(char* playerName) {
+  // Simple keyboard input simulation
+  static int charIndex = 0;
+  static char inputName[4] = {'_', '_', '_', '\0'};
+  static bool nameEntered = false;
+
+  gfx.fillScreen(blackColor);
+  gfx.setTextColor(whiteColor);
+  gfx.setTextSize(2);
+  gfx.setCursor(10, 20);
+  gfx.print("Enter Your Name:");
+
+  gfx.setTextSize(3);
+  gfx.setCursor(screenWidth / 2 - 30, screenHeight / 2 - 20);
+  gfx.print(inputName);
+
+  gfx.setTextSize(1);
+  gfx.setCursor(10, screenHeight - 20);
+  gfx.print("Use Left/Right to change");
+  gfx.setCursor(10, screenHeight - 10);
+  gfx.print("Select to confirm");
+
+  // Handle input
+  if (controllerData[1].b == -1) {
+    // Decrement character
+    if (inputName[charIndex] == '_') {
+      inputName[charIndex] = 'Z';
+    } else if (inputName[charIndex] == 'A') {
+      inputName[charIndex] = '_';
+    } else {
+      inputName[charIndex]--;
+    }
+    delay(200);
+  }
+  if (controllerData[1].b == 1) {
+    // Increment character
+    if (inputName[charIndex] == '_') {
+      inputName[charIndex] = 'A';
+    } else if (inputName[charIndex] == 'Z') {
+      inputName[charIndex] = '_';
+    } else {
+      inputName[charIndex]++;
+    }
+    delay(200);
+  }
+  if (controllerData[1].d) {
+    // Move to next character
+    if (charIndex < 2) {
+      charIndex++;
+    } else {
+      // Name entry complete
+      strcpy(playerName, inputName);
+      nameEntered = true;
+      charIndex = 0;
+      memset(inputName, '_', 3);
+    }
+    delay(200);
+  }
+
+  if (nameEntered) {
+    // Validate and save name
+    saveHighScore(selectedGame, playerName);
+    nameEntered = false;
+    appState = MENU_MAIN;
+  }
+}
+
+void saveHighScore(const char* gameName, const char* playerName) {
+  // Construct filename
+  String filename = "/";
+  if (strcmp(gameName, "Pong") == 0) {
+    filename += "pongLeaderboard.txt";
+  } else if (strcmp(gameName, "Snake") == 0) {
+    filename += "snakeLeaderboard.txt";
+  } else if (strcmp(gameName, "Flappy Bird") == 0) {
+    filename += "flappyBirdLeaderboard.txt";
+  } else if (strcmp(gameName, "Doom") == 0) {
+    filename += "doomLeaderboard.txt";
+  } else {
+    filename += "leaderboard.txt"; // Default filename
+  }
+
+  // Read existing leaderboard
+  struct ScoreEntry {
+    String name;
+    int score;
+  };
+
+  ScoreEntry entries[10];
+  int entryCount = 0;
+  int newScore = 0;
+
+  if (strcmp(gameName, "Pong") == 0) {
+    newScore = playerScore;
+  } else if (strcmp(gameName, "Flappy Bird") == 0) {
+    newScore = fbScore;
+  } else if (strcmp(gameName, "Snake") == 0) {
+    newScore = snakeScore;
+  }
+
+  File file = SD.open(filename);
+  if (file) {
+    while (file.available() && entryCount < 10) {
+      String line = file.readStringUntil('\n');
+      int separatorIndex = line.indexOf(' ');
+      if (separatorIndex > 0) {
+        entries[entryCount].name = line.substring(0, separatorIndex);
+        entries[entryCount].score = line.substring(separatorIndex + 1).toInt();
+        entryCount++;
+      }
+    }
+    file.close();
+  }
+
+  // Insert new score
+  bool inserted = false;
+  for (int i = 0; i < entryCount; i++) {
+    if (newScore > entries[i].score) {
+      // Shift scores down
+      for (int j = entryCount; j > i; j--) {
+        entries[j] = entries[j - 1];
+      }
+      entries[i].name = playerName;
+      entries[i].score = newScore;
+      inserted = true;
+      if (entryCount < 10) entryCount++;
+      break;
+    }
+  }
+  if (!inserted && entryCount < 10) {
+    entries[entryCount].name = playerName;
+    entries[entryCount].score = newScore;
+    entryCount++;
+  }
+
+  // Write back to file
+  file = SD.open(filename, FILE_WRITE);
+  if (file) {
+    for (int i = 0; i < entryCount && i < 10; i++) {
+      file.print(entries[i].name);
+      file.print(" ");
+      file.println(entries[i].score);
+    }
+    file.close();
   }
 }
 
