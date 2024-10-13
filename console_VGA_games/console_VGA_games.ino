@@ -8,6 +8,9 @@
 #include <SD.h>     // Include the SD library
 #include <SPI.h>    // Include the SPI library
 #include <vector>
+#include <stack>
+#include <cstdlib>  // For random generation
+#include <ctime>    // For seeding random generation
 
 
 // Joystick Command Definitions
@@ -283,23 +286,7 @@ int fbScore2;
 const int mapWidth3D = 16;
 const int mapHeight3D = 16;
 
-const char worldMap3D[] =
-    "################"
-    "#..............#"
-    "#..............#"
-    "#...##.........#"
-    "#..............#"
-    "#..............#"
-    "#..............#"
-    "#......###.....#"
-    "#..............#"
-    "#..............#"
-    "#..............#"
-    "#..............#"
-    "#......##......#"
-    "#..............#"
-    "#..............#"
-    "################";
+char worldMap3D[mapWidth3D * mapHeight3D];
 
 // Player Properties
 float posX = 8.0f, posY = 8.0f;   // Player position
@@ -535,6 +522,7 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
           dirY = 0.0f;
           planeX = 0.0f;
           planeY = 0.66f;
+          generateRandomMaze();
           initializeMonsters();
           gameState3D = GAME_PLAYING_3D;
         }
@@ -1485,6 +1473,64 @@ void run3DGame() {
     }
   }
 }
+
+// =========================
+// Random Maze Generation
+// =========================
+
+void generateRandomMaze() {
+  // Initialize the map with walls
+  for (int y = 0; y < mapHeight3D; y++) {
+    for (int x = 0; x < mapWidth3D; x++) {
+      worldMap3D[y * mapWidth3D + x] = '#';
+    }
+  }
+
+  // Use a depth-first search (DFS) approach to carve out a maze
+  std::stack<std::pair<int, int>> stack;
+  stack.push({1, 1});
+  worldMap3D[1 * mapWidth3D + 1] = '.'; // Start position
+
+  // Directions for movement: up, down, left, right
+  const int dx[] = {0, 0, -2, 2};
+  const int dy[] = {-2, 2, 0, 0};
+
+  // Seed the random generator
+  srand(time(0));
+
+  while (!stack.empty()) {
+    int x, y;
+    std::tie(x, y) = stack.top();
+
+    // Create a list of possible directions to move
+    std::vector<int> directions = {0, 1, 2, 3};
+    std::random_shuffle(directions.begin(), directions.end());
+
+    bool moved = false;
+    for (int i : directions) {
+      int nx = x + dx[i];
+      int ny = y + dy[i];
+
+      if (nx > 0 && nx < mapWidth3D - 1 && ny > 0 && ny < mapHeight3D - 1 && worldMap3D[ny * mapWidth3D + nx] == '#') {
+        // Carve a path
+        worldMap3D[(y + ny) / 2 * mapWidth3D + (x + nx) / 2] = '.';
+        worldMap3D[ny * mapWidth3D + nx] = '.';
+
+        // Move to the next cell
+        stack.push({nx, ny});
+        moved = true;
+        break;
+      }
+    }
+
+    // If no move was possible, backtrack
+    if (!moved) {
+      stack.pop();
+    }
+  }
+}
+
+
 
 // 3D Game Functions
 void handle3DGameInputs() {
