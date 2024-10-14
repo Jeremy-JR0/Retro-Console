@@ -171,6 +171,13 @@ bool checkCollisionWithMonsters(float x, float y);
 void drawFrame3D();
 void handle3DGameInputs();
 void display3DGameOverScreen();
+void drawMinimap(float playerX, float playerY, uint16_t playerColor, int offsetX, int offsetY);
+void run3DGameTwoPlayer();
+void handle3DGameInputsPlayer2();
+void drawFrame3DTwoPlayer();
+void renderOtherPlayerOnScreen(float posX, float posY, float posX2, float posY2, float ZBufferP1[], float ZBufferP2[]);
+
+
 
 // Leaderboard Functions
 void displayLeaderboard(const char* gameName);
@@ -288,10 +295,8 @@ const int mapHeight3D = 16;
 
 char worldMap3D[mapWidth3D * mapHeight3D];
 
-// Player Properties
-float posX = 8.0f, posY = 8.0f;   // Player position
-float dirX = -1.0f, dirY = 0.0f;  // Initial direction vector
-float planeX = 0.0f, planeY = 0.66f; // 2D raycaster version of camera plane
+
+
 
 // Timing for 3D Game
 unsigned long previousMillis3D = 0;
@@ -324,6 +329,24 @@ GameState3D gameState3D = GAME_PLAYING_3D;
 
 // Flag to check if high score was achieved in Flappy Bird
 bool fbNewHighScore = false;
+
+// Minimap dimensions
+const int minimapSize = 50; // Size of the minimap in pixels
+const int minimapTileSize = minimapSize / mapWidth3D; // Size of each tile in the minimap
+
+// Player 1 Properties
+float posX = 8.0f, posY = 8.0f;   // Player 1 position
+float dirX = -1.0f, dirY = 0.0f;  // Player 1 direction vector
+float planeX = 0.0f, planeY = 0.66f; // Player 1 camera plane
+
+// Player 2 Properties
+float posX2 = 10.0f, posY2 = 10.0f;   // Player 2 position
+float dirX2 = -1.0f, dirY2 = 0.0f;  // Player 2 direction vector
+float planeX2 = 0.0f, planeY2 = 0.66f; // Player 2 camera plane
+
+int player2Lives = 3;
+int player2Health = 3;
+bool twoPlayerMode = false;
 
 // =========================
 // Setup Function
@@ -671,9 +694,14 @@ void runSelectedGame() {
     runFlappyBird(isSinglePlayer);
   }
   else if (strcmp(selectedGame, "Doom") == 0) {
-    run3DGame();
+    if (currentPlayerCountItem == 1) { // Two-player mode selected
+      twoPlayerMode = true;
+      run3DGameTwoPlayer();
+    } else {
+      twoPlayerMode = false;
+      run3DGame();
+    }
   }
-  // Add other games here
 }
 
 // Pong Game Logic
@@ -1474,6 +1502,8 @@ void run3DGame() {
   }
 }
 
+
+
 // =========================
 // Random Maze Generation
 // =========================
@@ -1615,12 +1645,34 @@ void handle3DGameInputs() {
   }
 }
 
+// Function to draw the minimap
+void drawMinimap(float playerX, float playerY, uint16_t playerColor, int offsetX, int offsetY) {
+  // Position the minimap
+  int minimapStartX = offsetX;
+  int minimapStartY = offsetY;
+
+  // Draw the map representation
+  for (int y = 0; y < mapHeight3D; y++) {
+    for (int x = 0; x < mapWidth3D; x++) {
+      // Determine the color based on the map content
+      uint16_t color = (worldMap3D[y * mapWidth3D + x] == '#') ? whiteColor : blackColor;
+      gfx.fillRect(minimapStartX + x * minimapTileSize, minimapStartY + y * minimapTileSize, minimapTileSize, minimapTileSize, color);
+    }
+  }
+
+  // Draw the player position
+  int playerMinimapX = minimapStartX + (int)playerX * minimapTileSize;
+  int playerMinimapY = minimapStartY + (int)playerY * minimapTileSize;
+  gfx.fillCircle(playerMinimapX, playerMinimapY, minimapTileSize / 2, playerColor); // Draw the player as a small circle
+}
+
 
 
   // Exit to main menu (e.g., by pressing a specific button combination)
   // Implement exit logic if needed
 
 // Function to Draw Each Frame of the 3D Game
+
 void drawFrame3D() {
   // Clear the screen
   gfx.fillScreen(0);
@@ -1719,6 +1771,297 @@ void drawFrame3D() {
   // Render monsters and bullets
   renderMonsters(ZBuffer);
   renderBullets();
+
+  // Draw the minimap in the top right corner for player 1
+  drawMinimap(posX, posY, redColor, mode.hRes - minimapSize - 10, 10);
+}
+
+void drawFrame3DTwoPlayer() {
+  // Clear the screen
+  gfx.fillScreen(0);
+
+  // Draw Player 1 view
+  float ZBuffer1[mode.hRes / 2]; // Z-buffer for Player 1
+  for (int x = 0; x < mode.hRes / 2; x++) {
+    float cameraX = 2 * x / float(mode.hRes / 2) - 1;
+    float rayDirX = dirX + planeX * cameraX;
+    float rayDirY = dirY + planeY * cameraX;
+
+    int mapX = int(posX);
+    int mapY = int(posY);
+
+    float sideDistX;
+    float sideDistY;
+
+    float deltaDistX = (rayDirX == 0) ? 1e30 : fabs(1 / rayDirX);
+    float deltaDistY = (rayDirY == 0) ? 1e30 : fabs(1 / rayDirY);
+    float perpWallDist;
+
+    int stepX;
+    int stepY;
+
+    int hit = 0;
+    int side;
+
+    if (rayDirX < 0) {
+      stepX = -1;
+      sideDistX = (posX - mapX) * deltaDistX;
+    } else {
+      stepX = 1;
+      sideDistX = (mapX + 1.0 - posX) * deltaDistX;
+    }
+    if (rayDirY < 0) {
+      stepY = -1;
+      sideDistY = (posY - mapY) * deltaDistY;
+    } else {
+      stepY = 1;
+      sideDistY = (mapY + 1.0 - posY) * deltaDistY;
+    }
+
+    while (hit == 0) {
+      if (sideDistX < sideDistY) {
+        sideDistX += deltaDistX;
+        mapX += stepX;
+        side = 0;
+      } else {
+        sideDistY += deltaDistY;
+        mapY += stepY;
+        side = 1;
+      }
+      if (worldMap3D[mapY * mapWidth3D + mapX] == '#') hit = 1;
+    }
+
+    if (side == 0)
+      perpWallDist = (sideDistX - deltaDistX);
+    else
+      perpWallDist = (sideDistY - deltaDistY);
+
+    int lineHeight = (int)(mode.vRes / perpWallDist);
+    int drawStart = -lineHeight / 2 + mode.vRes / 2;
+    if (drawStart < 0) drawStart = 0;
+    int drawEnd = lineHeight / 2 + mode.vRes / 2;
+    if (drawEnd >= mode.vRes) drawEnd = mode.vRes - 1;
+
+    uint16_t color = 0xF800;
+    if (side == 1) {
+      color = color >> 1;
+    }
+
+    gfx.drawFastVLine(x, drawStart, drawEnd - drawStart, color);
+    ZBuffer1[x] = perpWallDist;
+  }
+
+  // Draw Player 2 view
+  float ZBuffer2[mode.hRes / 2]; // Z-buffer for Player 2
+  for (int x = 0; x < mode.hRes / 2; x++) {
+    float cameraX = 2 * x / float(mode.hRes / 2) - 1;
+    float rayDirX = dirX2 + planeX2 * cameraX;
+    float rayDirY = dirY2 + planeY2 * cameraX;
+
+    int mapX = int(posX2);
+    int mapY = int(posY2);
+
+    float sideDistX;
+    float sideDistY;
+
+    float deltaDistX = (rayDirX == 0) ? 1e30 : fabs(1 / rayDirX);
+    float deltaDistY = (rayDirY == 0) ? 1e30 : fabs(1 / rayDirY);
+    float perpWallDist;
+
+    int stepX;
+    int stepY;
+
+    int hit = 0;
+    int side;
+
+    if (rayDirX < 0) {
+      stepX = -1;
+      sideDistX = (posX2 - mapX) * deltaDistX;
+    } else {
+      stepX = 1;
+      sideDistX = (mapX + 1.0 - posX2) * deltaDistX;
+    }
+    if (rayDirY < 0) {
+      stepY = -1;
+      sideDistY = (posY2 - mapY) * deltaDistY;
+    } else {
+      stepY = 1;
+      sideDistY = (mapY + 1.0 - posY2) * deltaDistY;
+    }
+
+    while (hit == 0) {
+      if (sideDistX < sideDistY) {
+        sideDistX += deltaDistX;
+        mapX += stepX;
+        side = 0;
+      } else {
+        sideDistY += deltaDistY;
+        mapY += stepY;
+        side = 1;
+      }
+      if (worldMap3D[mapY * mapWidth3D + mapX] == '#') hit = 1;
+    }
+
+    if (side == 0)
+      perpWallDist = (sideDistX - deltaDistX);
+    else
+      perpWallDist = (sideDistY - deltaDistY);
+
+    int lineHeight = (int)(mode.vRes / perpWallDist);
+    int drawStart = -lineHeight / 2 + mode.vRes / 2;
+    if (drawStart < 0) drawStart = 0;
+    int drawEnd = lineHeight / 2 + mode.vRes / 2;
+    if (drawEnd >= mode.vRes) drawEnd = mode.vRes - 1;
+
+    uint16_t color = 0x001F;
+    if (side == 1) {
+      color = 0xF81F; // Pink walls for Player 2 (side walls)
+    }
+
+    gfx.drawFastVLine(x + mode.hRes / 2, drawStart, drawEnd - drawStart, color);
+    ZBuffer2[x] = perpWallDist;
+  }
+
+  // Render other player on each screen
+  renderOtherPlayerOnScreen(posX, posY, posX2, posY2, ZBuffer1, ZBuffer2);
+
+  // Draw minimaps for both players
+  drawMinimap(posX, posY, redColor, mode.hRes / 2 - minimapSize - 10, 10); // Player 1 minimap
+  drawMinimap(posX2, posY2, blueColor, mode.hRes - minimapSize - 10, 10); // Player 2 minimap
+}
+
+void renderOtherPlayerOnScreen(float posX1, float posY1, float posX2, float posY2, float ZBufferP1[], float ZBufferP2[]) {
+  // Render Player 2 on Player 1's screen
+  float otherPlayerX = posX2 - posX1;
+  float otherPlayerY = posY2 - posY1;
+  float invDet = 1.0f / (planeX * dirY - dirX * planeY);
+  float transformX = invDet * (dirY * otherPlayerX - dirX * otherPlayerY);
+  float transformY = invDet * (-planeY * otherPlayerX + planeX * otherPlayerY);
+
+  if (transformY > 0) {
+    int spriteScreenX = int((mode.hRes / 4) * (1 + transformX / transformY));
+    int spriteHeight = abs(int(mode.vRes / transformY)) / 2;
+    int drawStartY = -spriteHeight / 2 + mode.vRes / 2;
+    int drawEndY = spriteHeight / 2 + mode.vRes / 2;
+    int spriteWidth = spriteHeight;
+    int drawStartX = -spriteWidth / 2 + spriteScreenX;
+    int drawEndX = spriteWidth / 2 + spriteScreenX;
+
+    for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
+      if (stripe > 0 && stripe < mode.hRes / 2 && transformY < ZBufferP1[stripe]) {
+        gfx.drawFastVLine(stripe, drawStartY, drawEndY - drawStartY, 0x001F); // Blue color for Player 2
+      }
+    }
+  }
+
+  // Render Player 1 on Player 2's screen
+  otherPlayerX = posX1 - posX2;
+  otherPlayerY = posY1 - posY2;
+  invDet = 1.0f / (planeX2 * dirY2 - dirX2 * planeY2);
+  transformX = invDet * (dirY2 * otherPlayerX - dirX2 * otherPlayerY);
+  transformY = invDet * (-planeY2 * otherPlayerX + planeX2 * otherPlayerY);
+
+  if (transformY > 0) {
+    int spriteScreenX = int((mode.hRes / 4) * (1 + transformX / transformY));
+    int spriteHeight = abs(int(mode.vRes / transformY)) / 2;
+    int drawStartY = -spriteHeight / 2 + mode.vRes / 2;
+    int drawEndY = spriteHeight / 2 + mode.vRes / 2;
+    int spriteWidth = spriteHeight;
+    int drawStartX = -spriteWidth / 2 + spriteScreenX;
+    int drawEndX = spriteWidth / 2 + spriteScreenX;
+
+    for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
+      if (stripe > 0 && stripe < mode.hRes / 2 && transformY < ZBufferP2[stripe]) {
+        gfx.drawFastVLine((mode.hRes / 2) + stripe, drawStartY, drawEndY - drawStartY, 0xF800); // Red color for Player 1
+      }
+    }
+  }
+}
+
+
+// Function to run the 3D game in two-player mode
+void run3DGameTwoPlayer() {
+  unsigned long currentMillis = millis();
+
+  if (gameState3D == GAME_OVER_3D) {
+    display3DGameOverScreen();
+    if (controllerData[1].d || controllerData[2].d) {  // Use Select button to return to menu
+      delay(200);
+      appState = MENU_MAIN;
+      displayMenuMain();
+      return;
+    }
+  } else {
+    // Handle inputs for both players
+    handle3DGameInputs();
+    handle3DGameInputsPlayer2();
+
+    // Update and draw frame at regular intervals
+    if (currentMillis - previousMillis3D >= interval3D) {
+      previousMillis3D = currentMillis;
+      drawFrame3DTwoPlayer();
+    }
+  }
+}
+
+// Function to handle inputs for Player 2
+void handle3DGameInputsPlayer2() {
+  float moveSpeed = 0.05f; // Movement speed
+  float rotSpeed = 0.05f;  // Rotation speed
+
+  // Movement Forward/Backward for Player 2
+  if (controllerData[2].command & COMMAND_UP) { // Move forward
+    float newPosX = posX2 + dirX2 * moveSpeed;
+    float newPosY = posY2 + dirY2 * moveSpeed;
+    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
+      posX2 = newPosX;
+      posY2 = newPosY;
+    }
+  }
+  if (controllerData[2].command & COMMAND_DOWN) { // Move backward
+    float newPosX = posX2 - dirX2 * moveSpeed;
+    float newPosY = posY2 - dirY2 * moveSpeed;
+    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
+      posX2 = newPosX;
+      posY2 = newPosY;
+    }
+  }
+
+  // Strafing Left/Right for Player 2
+  if (controllerData[2].command & COMMAND_LEFT) { // Strafe left
+    float newPosX = posX2 - dirY2 * moveSpeed;
+    float newPosY = posY2 + dirX2 * moveSpeed;
+    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
+      posX2 = newPosX;
+      posY2 = newPosY;
+    }
+  }
+  if (controllerData[2].command & COMMAND_RIGHT) { // Strafe right
+    float newPosX = posX2 + dirY2 * moveSpeed;
+    float newPosY = posY2 - dirX2 * moveSpeed;
+    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
+      posX2 = newPosX;
+      posY2 = newPosY;
+    }
+  }
+
+  // Rotation for Player 2 with b
+  if (controllerData[2].b == -1) { // Rotate left
+    float oldDirX = dirX2;
+    dirX2 = dirX2 * cos(rotSpeed) - dirY2 * sin(rotSpeed);
+    dirY2 = oldDirX * sin(rotSpeed) + dirY2 * cos(rotSpeed);
+    float oldPlaneX = planeX2;
+    planeX2 = planeX2 * cos(rotSpeed) - planeY2 * sin(rotSpeed);
+    planeY2 = oldPlaneX * sin(rotSpeed) + planeY2 * cos(rotSpeed);
+  }
+  if (controllerData[2].b == 1) { // Rotate right
+    float oldDirX = dirX2;
+    dirX2 = dirX2 * cos(-rotSpeed) - dirY2 * sin(-rotSpeed);
+    dirY2 = oldDirX * sin(-rotSpeed) + dirY2 * cos(-rotSpeed);
+    float oldPlaneX = planeX2;
+    planeX2 = planeX2 * cos(-rotSpeed) - planeY2 * sin(-rotSpeed);
+    planeY2 = oldPlaneX * sin(-rotSpeed) + planeY2 * cos(-rotSpeed);
+  }
 }
 
 // Function to Display Game Over Screen for 3D Game
