@@ -152,8 +152,10 @@ esp_now_peer_info_t peerInfo;
 // Built-in Button input pins on LilyGO T-Beam S3
 const int movePin = 0;  // Left Button (GPIO 0)
 const int selectPin = 14;  // Right Button (GPIO 14)
-const int joystickXPin = 13;  // X-axis pin
-const int joystickYPin = 12;  // Y-axis pin
+const int joystickXPin1 = 13;  // X-axis pin
+const int joystickYPin1 = 12;  // Y-axis pin
+const int joystickXPin2 = 11;  // X-axis pin
+const int joystickYPin2 = 10;  // Y-axis pin
 
 // Variables to store previous button states (for debouncing)
 int lastMoveState = HIGH;
@@ -262,8 +264,11 @@ void loop() {
 
   //////////////////////////////////////////////// JOYSTICK /////////////////////////////////////////////////////////////////////////////
   // Read the current state of the joystick
-  xValue = analogRead(joystickXPin);  // Read joystick X-axis value
-  yValue = analogRead(joystickYPin);  // Read joystick Y-axis value
+  xValue1 = analogRead(joystickXPin1);  // Read joystick X-axis value
+  yValue1 = analogRead(joystickYPin1);  // Read joystick Y-axis value
+  xValue2 = analogRead(joystickXPin2);  // Read joystick X-axis value
+  yValue2 = analogRead(joystickYPin2);  // Read joystick Y-axis value
+
 
   // Interpret the joy stick data
   // converts the analog value to commands 
@@ -272,29 +277,29 @@ void loop() {
   myData.command2 = COMMAND_NO;
 
   // check left/right commands for joystick 1
-  if (xValue < LEFT_THRESHOLD)
+  if (xValue1 < LEFT_THRESHOLD)
     //Bitwise OR
     myData.command1 = myData.command1 | COMMAND_LEFT;
-  else if (xValue > RIGHT_THRESHOLD)
+  else if (xValue1 > RIGHT_THRESHOLD)
     myData.command1 = myData.command1 | COMMAND_RIGHT;
 
   // check up/down commands for joystick 1
-  if (yValue > UP_THRESHOLD)
+  if (yValue1 > UP_THRESHOLD)
     myData.command1 = myData.command1 | COMMAND_UP;
-  else if (yValue < DOWN_THRESHOLD)
+  else if (yValue1 < DOWN_THRESHOLD)
     myData.command1 = myData.command1 | COMMAND_DOWN;
 
   // check left/right commands for joystick 2
-  if (xValue < LEFT_THRESHOLD)
+  if (xValue2 < LEFT_THRESHOLD)
     //Bitwise OR
     myData.command2 = myData.command2 | COMMAND_LEFT;
-  else if (xValue > RIGHT_THRESHOLD)
+  else if (xValue2 > RIGHT_THRESHOLD)
     myData.command2 = myData.command2 | COMMAND_RIGHT;
 
   // check up/down commands for joystick 2
-  if (yValue > UP_THRESHOLD)
+  if (yValue2 > UP_THRESHOLD)
     myData.command2 = myData.command2 | COMMAND_UP;
-  else if (yValue < DOWN_THRESHOLD)
+  else if (yValue2 < DOWN_THRESHOLD)
     myData.command2 = myData.command2 | COMMAND_DOWN;
 
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
