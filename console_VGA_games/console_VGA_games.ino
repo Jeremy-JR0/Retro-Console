@@ -13,6 +13,15 @@
 #include <ctime>    // For seeding random generation
 #include <vector>
 #include <algorithm>
+#include "driver/ledc.h"  // For PWM functions
+
+// Pin definition for audio output
+const int pwmPin = 1;  // GPIO pin 1 for audio output (ensure this pin is available)
+
+// Define PWM properties
+const int pwmChannel = 0;  // PWM channel 0
+const int resolution = 8;   // 8-bit resolution for PWM
+
 
 struct Sprite {
     float x, y;      // Position in the game world
@@ -49,12 +58,21 @@ GfxWrapper<VGA> gfx(vga, mode.hRes, mode.vRes);
 
 // Structure to receive data from the controller
 typedef struct struct_message {
-  char a[32];       // Identifier (e.g., unique ID for the controller)
-  int b;        // Button for moving between menu items
-  float c;          // Movement input or placeholder
-  bool d;        // Button for selecting the current menu item or action
-  int command;  // Joystick command
+  char a[32];                   // 32 bytes
+  int32_t b;                    // 4 bytes
+  float c;                      // 4 bytes
+  uint8_t d;                    // 1 byte
+  // No padding if packed
+  int32_t command1;             // 4 bytes
+  int32_t command2;             // 4 bytes
+  float mykalmanAnglePitch;     // 4 bytes
+  float myKalmanAngleRoll;      // 4 bytes
+  int32_t button1;              // 4 bytes
+  int32_t button2;              // 4 bytes
+  int32_t button3;              // 4 bytes
+  int32_t vibrator;             // 4 bytes
 } struct_message;
+
 
 
 // Map to store data from each controller
@@ -103,6 +121,11 @@ const char* selectedGame = nullptr; // Pointer to the selected game
 
 unsigned long startupStartTime = 0;
 const long startupDuration = 5000; // Display "Scorpio" for 5 seconds
+// Timing variables for debouncing
+unsigned long lastNavInputTime = 0;
+unsigned long lastSelectInputTime = 0;
+const unsigned long debounceInterval = 200; // Debounce interval in milliseconds
+
 
 // =========================
 // Color Definitions
@@ -360,9 +383,95 @@ int player2Health = 8;
 int player1Lives = 3;
 int player2Lives = 3;
 
+const unsigned long shootCooldown = 500; // Cooldown duration in milliseconds (adjust as needed)
 
+//  Frequencies
+// Octave 3
+const int C3  = 131;
+const int Cs3 = 139;  // C#3 / D♭3
+const int D3  = 147;
+const int Ds3 = 156;  // D#3 / E♭3
+const int E3  = 165;
+const int F3  = 175;
+const int Fs3 = 185;  // F#3 / G♭3
+const int G3  = 196;
+const int Gs3 = 208;  // G#3 / A♭3
+const int A3  = 220;
+const int As3 = 233;  // A#3 / B♭3
+const int B3  = 247;
 
+// Octave 4
+const int C4  = 262;
+const int Cs4 = 277;  // C#4 / D♭4
+const int D4  = 294;
+const int Ds4 = 311;  // D#4 / E♭4
+const int E4  = 330;
+const int F4  = 349;
+const int Fs4 = 370;  // F#4 / G♭4
+const int G4  = 392;
+const int Gs4 = 415;  // G#4 / A♭4
+const int A4  = 440;  // A4 is standard tuning
+const int As4 = 466;  // A#4 / B♭4
+const int B4  = 494;
 
+// Octave 5
+const int C5  = 523;
+const int Cs5 = 554;  // C#5 / D♭5
+const int D5  = 587;
+const int Ds5 = 622;  // D#5 / E♭5
+const int E5  = 659;
+const int F5  = 698;
+const int Fs5 = 740;  // F#5 / G♭5
+const int G5  = 784;
+const int Gs5 = 831;  // G#5 / A♭5
+const int A5  = 880;
+const int As5 = 932;  // A#5 / B♭5
+const int B5  = 988;
+
+// Song Structure
+struct Song {
+  int bpm;  // Beats per minute
+  float (*notes)[2];  // Pointer to a 2D array where [Note, Duration_in_beats]
+  int length;  // Length of the song (number of notes)
+};
+
+// Define the Doom song with notes and durations (in beats)
+float doomNotes[][2] = {
+    {E3, 0.5},  // E3 for half a beat
+    {E3, 0.5},  // E3 for half a beat
+    {E4, 1},    // E4 for 1 beat
+    {E3, 0.5},  // E3 for half a beat
+    {D4, 1},    // D4 for 1 beat
+    {E3, 0.5},  // E3 for half a beat
+    {C4, 1},    // C4 for 1 beat
+    {E3, 0.5},  // E3 for half a beat
+    {As3, 1},   // A#4 for 1 beat
+    {E3, 0.5},  // E3 for half a beat
+    {As3, 0.5}, // B4 for 1 beat
+    {B4, 0.5},  // C4 for half a beat
+    {E3, 0.5},  // E3 for half a beat
+    {E3, 0.5},  // E3 for half a beat
+    {E4, 1},    // E4 for 1 beat
+    {E3, 0.5},  // E3 for half a beat
+    {D4, 1},    // D4 for 1 beat
+    {E3, 0.5},  // E3 for half a beat
+    {C4, 1},    // C4 for 1 beat
+    {E3, 0.5},  // E3 for half a beat
+    {As3, 3}  // A#4 for 1.5 beats
+};
+
+// Create the song struct
+Song DoomSong = {
+  250,  // BPM
+  doomNotes,  // Pointer to the 2D array of notes
+  sizeof(doomNotes) / sizeof(doomNotes[0])  // Calculate the length of the array
+};
+
+// Variables for song playback
+bool isSongPlaying = false;
+unsigned long noteStartTime = 0;
+int currentNoteIndex = 0;
+int beatDuration = 0;
 
 // =========================
 // Setup Function
@@ -414,6 +523,12 @@ void setup() {
   // Display startup screen
   startupStartTime = millis();
   displayStartupScreen();
+
+    // Set up the PWM channel
+  ledcSetup(pwmChannel, 2000, resolution);  // Initialize with an arbitrary frequency (e.g., 2000 Hz)
+
+  // Attach the PWM channel to the pin
+  ledcAttachPin(pwmPin, pwmChannel);
 }
 
 // =========================
@@ -503,30 +618,32 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   memcpy(&data, incomingData, sizeof(data));
   controllerData[controllerNumber] = data;
 
-  // Update controller inputs based on current app state
+  unsigned long currentMillis = millis();
+
   if(appState == MENU_MAIN) {
     // Handle navigation in main menu
-    if (data.d) { // Select button pressed
+    if (data.button2 == LOW && (currentMillis - lastSelectInputTime >= debounceInterval)) { // Select button pressed
+      lastSelectInputTime = currentMillis; // Debounce select button
       // Handle selection based on currentMainMenuItem
       selectedGame = mainMenuItems[currentMainMenuItem];
-      Serial.print("Selected Game: ");
-      Serial.println(selectedGame);
-
       // Transition to player count selection
       appState = MENU_PLAYER_COUNT;
       currentPlayerCountItem = 0; // Reset player count selection
     } else {
-      // Handle navigation
-      if (data.b == 1) { // Move down
+      // Handle navigation with joystick 1
+      if ((data.command1 & COMMAND_DOWN) && (currentMillis - lastNavInputTime >= debounceInterval)) { // Move down
         currentMainMenuItem = (currentMainMenuItem + 1) % totalMainMenuItems;
-      } else if (data.b == -1) { // Move up
+        lastNavInputTime = currentMillis; // Debounce navigation input
+      } else if ((data.command1 & COMMAND_UP) && (currentMillis - lastNavInputTime >= debounceInterval)) { // Move up
         currentMainMenuItem = (currentMainMenuItem - 1 + totalMainMenuItems) % totalMainMenuItems;
+        lastNavInputTime = currentMillis; // Debounce navigation input
       }
     }
   }
   else if(appState == MENU_PLAYER_COUNT) {
     // Handle navigation in player count menu
-    if (data.d) { // Select button pressed
+    if (data.button2 == LOW && (currentMillis - lastSelectInputTime >= debounceInterval)) { // Select button pressed
+      lastSelectInputTime = currentMillis; // Debounce select button
       // Handle selection based on currentPlayerCountItem
       const char* playerCount = playerCountMenuItems[currentPlayerCountItem];
       Serial.print("Selected Option: ");
@@ -565,6 +682,7 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
             player2Health = 8;
             player1Lives = 3;         // Reset lives
             player2Lives = 3;
+            startSong(DoomSong);
           } else {
             twoPlayerMode = false;
             // Initialize 3D game variables for single player
@@ -579,20 +697,25 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
             gameState3D = GAME_PLAYING_3D;
             player1Health = 8;        // Reset health
             player1Lives = 3;         // Reset lives
+            // Start the Doom song
+            startSong(DoomSong);
           }
         }
       }
     } else {
-      // Handle navigation
-      if (data.b == 1) { // Move down
+      // Handle navigation with joystick 1
+      if ((data.command1 & COMMAND_DOWN) && (currentMillis - lastNavInputTime >= debounceInterval)) { // Move down
         currentPlayerCountItem = (currentPlayerCountItem + 1) % totalPlayerCountMenuItems;
-      } else if (data.b == -1) { // Move up
+        lastNavInputTime = currentMillis; // Debounce navigation input
+      } else if ((data.command1 & COMMAND_UP) && (currentMillis - lastNavInputTime >= debounceInterval)) { // Move up
         currentPlayerCountItem = (currentPlayerCountItem - 1 + totalPlayerCountMenuItems) % totalPlayerCountMenuItems;
+        lastNavInputTime = currentMillis; // Debounce navigation input
       }
     }
   }
   else if (appState == DISPLAY_LEADERBOARD) {
-    if (data.d) { // Press select to return
+    if (data.button2 == LOW && (currentMillis - lastSelectInputTime >= debounceInterval)) { // Press select to return
+      lastSelectInputTime = currentMillis; // Debounce select button
       appState = MENU_PLAYER_COUNT;
     }
   }
@@ -748,7 +871,7 @@ void runPong(bool isSinglePlayer) {
       updateLeaderboard("Pong", playerScore);
       newHighScore = true;
     }
-    if (controllerData[1].d) {  // Button press to return to menu
+    if (controllerData[1].button2 == LOW) {  // Button press to return to menu
       delay(200);
       appState = MENU_MAIN;
       displayMenuMain();
@@ -816,11 +939,11 @@ void runPong(bool isSinglePlayer) {
 // Handle player inputs for both single-player and two-player mode
 void handlePlayerInputs(bool isSinglePlayer) {
   // Controller 1: Player 1 Paddle
-  if (controllerData[1].b == -1) {
+  if (controllerData[1].command1 & COMMAND_UP) {
     playerPaddleY -= playerSpeed;
     if (playerPaddleY < 0) playerPaddleY = 0;
   }
-  if (controllerData[1].b == 1) {
+  if (controllerData[1].command1 & COMMAND_DOWN) {
     playerPaddleY += playerSpeed;
     if (playerPaddleY + paddleHeight > gfx.height()) playerPaddleY = gfx.height() - paddleHeight;
   }
@@ -839,11 +962,11 @@ void handlePlayerInputs(bool isSinglePlayer) {
   } else {
     // Controller 2: Player 2 Paddle
     if (controllerMap.size() >= 2) {
-      if (controllerData[2].b == -1) {
+      if (controllerData[2].button1 == -1) {
         aiPaddleY -= playerSpeed;
         if (aiPaddleY < 0) aiPaddleY = 0;
       }
-      if (controllerData[2].b == 1) {
+      if (controllerData[2].button1 == 1) {
         aiPaddleY += playerSpeed;
         if (aiPaddleY + paddleHeight > gfx.height()) aiPaddleY = gfx.height() - paddleHeight;
       }
@@ -853,24 +976,32 @@ void handlePlayerInputs(bool isSinglePlayer) {
 
 // Function to setup serve
 void setupServe(bool isSinglePlayer) {
-  // Clear screen
-  gfx.fillScreen(blackColor);
-  drawCenterLine();
-  displayScores();
-  // Draw paddles
-  gfx.fillRect(playerPaddleX, playerPaddleY, paddleWidth, paddleHeight, paddleColor);
-  gfx.fillRect(aiPaddleX, aiPaddleY, paddleWidth, paddleHeight, paddleColor);
-  // Draw ball
-  gfx.fillCircle(ballX, ballY, ballRadius, ballColor);
-  // Display "Press Select to Serve"
-  gfx.setTextColor(whiteColor);
-  gfx.setTextSize(1);
-  gfx.setCursor(screenWidth / 2 - 50, screenHeight / 2 - 10);
-  gfx.println("Press Select to Serve");
-  vga.show();
+  static bool screenDrawn = false; // Add a static flag
 
-  if (controllerData[1].d) {
+  if (!screenDrawn) {
+    // Draw the serve screen once
+    gfx.fillScreen(blackColor);
+    drawCenterLine();
+    displayScores();
+    // Draw paddles
+    gfx.fillRect(playerPaddleX, playerPaddleY, paddleWidth, paddleHeight, paddleColor);
+    gfx.fillRect(aiPaddleX, aiPaddleY, paddleWidth, paddleHeight, paddleColor);
+    // Draw ball
+    gfx.fillCircle(ballX, ballY, ballRadius, ballColor);
+    // Display "Press Select to Serve"
+    gfx.setTextColor(whiteColor);
+    gfx.setTextSize(1);
+    gfx.setCursor(screenWidth / 2 - 50, screenHeight / 2 - 10);
+    gfx.println("Press Select to Serve");
+    vga.show();
+
+    screenDrawn = true; // Set the flag
+  }
+
+  // Wait for player input to start the serve
+  if (controllerData[1].button2 == LOW) { // Use button2 instead of data.d
     serve = false;
+    screenDrawn = false; // Reset the flag for the next serve
     float angle = (random(-30, 30)) * PI / 180.0;
     ballSpeedY = ballSpeed * sin(angle);
     ballSpeedX = playerServe ? ballSpeed * cos(angle) : -ballSpeed * cos(angle);
@@ -1000,7 +1131,7 @@ void displayWinMessage(const char* winner) {
     gfx.print("New High Score!");
     gfx.setCursor(mode.hRes / 2 - 70, mode.vRes / 2 + 20);
     gfx.print("Press Select to Save");
-    if (controllerData[1].d) {
+    if (controllerData[1].button2  == LOW) {
       appState = NAME_ENTRY;
     }
   } else {
@@ -1078,13 +1209,13 @@ void runSnake(bool isSinglePlayer) {
       gfx.print("New High Score!");
       gfx.setCursor(screenWidth / 2 - 80, screenHeight / 2 + 30);
       gfx.print("Press Select to Save");
-      if (controllerData[1].d) {
+      if (controllerData[1].button2 == LOW) {
         appState = NAME_ENTRY;
       }
     } else {
       gfx.setCursor(screenWidth / 2 - 70, screenHeight / 2 + 20);
       gfx.print("Press Select to return");
-      if (controllerData[1].d) {
+      if (controllerData[1].button2 == LOW) {
         appState = MENU_MAIN;
         displayMenuMain();
         snakeGameInitialized = false;
@@ -1120,50 +1251,57 @@ void resetSnakeGame(bool isSinglePlayer) {
 
 void handleSnakeInput() {
   int newDirection = snakeDirection;
-  if (controllerData[1].command & COMMAND_UP && snakeDirection != COMMAND_DOWN) {
+  if (controllerData[1].command1 & COMMAND_UP && snakeDirection != COMMAND_DOWN) {
     newDirection = COMMAND_UP;
   }
-  else if (controllerData[1].command & COMMAND_DOWN && snakeDirection != COMMAND_UP) {
+  else if (controllerData[1].command1 & COMMAND_DOWN && snakeDirection != COMMAND_UP) {
     newDirection = COMMAND_DOWN;
   }
-  else if (controllerData[1].command & COMMAND_LEFT && snakeDirection != COMMAND_RIGHT) {
+  else if (controllerData[1].command1 & COMMAND_LEFT && snakeDirection != COMMAND_RIGHT) {
     newDirection = COMMAND_LEFT;
   }
-  else if (controllerData[1].command & COMMAND_RIGHT && snakeDirection != COMMAND_LEFT) {
+  else if (controllerData[1].command1 & COMMAND_RIGHT && snakeDirection != COMMAND_LEFT) {
     newDirection = COMMAND_RIGHT;
   }
   snakeDirection = newDirection;
 }
 
 void updateSnake() {
-  // Move the snake
-  SnakeSegment newHead = snake.front();
-  switch (snakeDirection) {
-    case COMMAND_UP:
-      newHead.y -= gridSize;
-      break;
-    case COMMAND_DOWN:
-      newHead.y += gridSize;
-      break;
-    case COMMAND_LEFT:
-      newHead.x -= gridSize;
-      break;
-    case COMMAND_RIGHT:
-      newHead.x += gridSize;
-      break;
-  }
+    // Move the snake
+    SnakeSegment newHead = snake.front();
+    switch (snakeDirection) {
+        case COMMAND_UP:
+            newHead.y -= gridSize;
+            break;
+        case COMMAND_DOWN:
+            newHead.y += gridSize;
+            break;
+        case COMMAND_LEFT:
+            newHead.x -= gridSize;
+            break;
+        case COMMAND_RIGHT:
+            newHead.x += gridSize;
+            break;
+    }
 
-  // Add new head
-  snake.insert(snake.begin(), newHead);
+    // Add new head
+    snake.insert(snake.begin(), newHead);
 
-  // Check if food is eaten
-  if (newHead.x == foodX && newHead.y == foodY) {
-    snakeScore++;
-    generateFood();
-  } else {
-    // Remove tail
-    snake.pop_back();
-  }
+    // Check if food is eaten
+    if (newHead.x == foodX && newHead.y == foodY) {
+        snakeScore++;
+        generateFood();
+        // Draw new food
+        gfx.fillRect(foodX, foodY, gridSize, gridSize, foodColor);
+    } else {
+        // Remove and erase tail
+        SnakeSegment tail = snake.back();
+        gfx.fillRect(tail.x, tail.y, gridSize, gridSize, blackColor); // Erase tail
+        snake.pop_back();
+    }
+
+    // Draw new head
+    gfx.fillRect(newHead.x, newHead.y, gridSize, gridSize, snakeColor);
 }
 
 void checkSnakeCollision() {
@@ -1185,21 +1323,12 @@ void checkSnakeCollision() {
 }
 
 void drawSnakeGame() {
-  gfx.fillScreen(blackColor);
-
-  // Draw food
-  gfx.fillRect(foodX, foodY, gridSize, gridSize, foodColor);
-
-  // Draw snake
-  for (const auto& segment : snake) {
-    gfx.fillRect(segment.x, segment.y, gridSize, gridSize, snakeColor);
-  }
-
-  // Draw score
-  gfx.setTextColor(whiteColor);
-  gfx.setCursor(10, 10);
-  gfx.print("Score: ");
-  gfx.print(snakeScore);
+    // Draw score (update as needed)
+    gfx.fillRect(0, 0, screenWidth, 20, blackColor); // Clear score area
+    gfx.setTextColor(whiteColor);
+    gfx.setCursor(10, 10);
+    gfx.print("Score: ");
+    gfx.print(snakeScore);
 }
 
 void generateFood() {
@@ -1282,7 +1411,7 @@ void runFlappyBird(bool isSinglePlayer) {
 
 void runFlappyBirdSinglePlayer() {
   // Process input
-  if (controllerData[1].d) { // Use Select button to jump
+  if (controllerData[1].button2 == LOW) { // Use Select button to jump
     fbBirdSpeedY = fbJumpStrength;
   }
 
@@ -1323,14 +1452,14 @@ void runFlappyBirdSinglePlayer() {
       gfx.print("New High Score!");
       gfx.setCursor(fbScreenWidth / 2 - 80, fbScreenHeight / 2 + 20);
       gfx.print("Press Select to Save");
-      if (controllerData[1].d) {
+      if (controllerData[1].button2 == LOW) {
         appState = NAME_ENTRY;
       }
     } else {
       gfx.setTextSize(1);
       gfx.setCursor(fbScreenWidth / 2 - 80, fbScreenHeight / 2 + 10);
       gfx.print("Press Select to return");
-      if (controllerData[1].d) {
+      if (controllerData[1].button2 == LOW) {
         // Return to main menu
         appState = MENU_MAIN;
         displayMenuMain();
@@ -1342,11 +1471,11 @@ void runFlappyBirdSinglePlayer() {
 
 void runFlappyBirdTwoPlayer() {
   // Process input for Player 1
-  if (fbPlayer1Alive && controllerData[1].d) {
+  if (fbPlayer1Alive && controllerData[1].button2 == LOW) {
     fbBirdSpeedY1 = fbJumpStrength;
   }
   // Process input for Player 2
-  if (fbPlayer2Alive && controllerData[2].d) {
+  if (fbPlayer2Alive && controllerData[2].button2 == LOW) {
     fbBirdSpeedY2 = fbJumpStrength;
   }
 
@@ -1400,7 +1529,7 @@ void runFlappyBirdTwoPlayer() {
     gfx.setTextSize(1);
     gfx.setCursor(fbScreenWidth / 2 - 80, fbScreenHeight / 2 + 10);
     gfx.print("Press Select to return");
-    if (controllerData[1].d || controllerData[2].d) {
+    if (controllerData[1].button2 == LOW || controllerData[2].button2 == LOW) {
       appState = MENU_MAIN;
       displayMenuMain();
       fbGameInitialized = false;
@@ -1508,8 +1637,9 @@ void run3DGame() {
   unsigned long currentMillis = millis();
 
   if (gameState3D == GAME_OVER_3D) {
+    stopSong();
     display3DGameOverScreen();
-    if (controllerData[1].d) {  // Use Select button to return to menu
+    if (controllerData[1].button2 == LOW) {  // Use Select button to return to menu
       delay(200);
       appState = MENU_MAIN;
       displayMenuMain();
@@ -1521,6 +1651,9 @@ void run3DGame() {
 
     // Update bullets
     updateBullets();
+
+    // Play the song
+    playSong(DoomSong);
 
     // Update and draw frame at regular intervals
     if (currentMillis - previousMillis3D >= interval3D) {
@@ -1596,7 +1729,7 @@ void handle3DGameInputs() {
   float rotSpeed = 0.05f;  // Rotation speed
 
   // Movement Forward/Backward
-  if (controllerData[1].command & COMMAND_UP) { // Move forward
+  if (controllerData[1].command1 & COMMAND_UP) { // Move forward
     float newPosX = posX + dirX * moveSpeed;
     float newPosY = posY + dirY * moveSpeed;
     if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.' &&
@@ -1605,7 +1738,7 @@ void handle3DGameInputs() {
       posY = newPosY;
     }
   }
-  if (controllerData[1].command & COMMAND_DOWN) { // Move backward
+  if (controllerData[1].command1 & COMMAND_DOWN) { // Move backward
     float newPosX = posX - dirX * moveSpeed;
     float newPosY = posY - dirY * moveSpeed;
     if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.' &&
@@ -1616,7 +1749,7 @@ void handle3DGameInputs() {
   }
 
   // Strafing Left/Right
-  if (controllerData[1].command & COMMAND_LEFT) { // Strafe left
+  if (controllerData[1].command1 & COMMAND_RIGHT) { // Strafe left
     float newPosX = posX - dirY * moveSpeed;
     float newPosY = posY + dirX * moveSpeed;
     if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.' &&
@@ -1625,7 +1758,7 @@ void handle3DGameInputs() {
       posY = newPosY;
     }
   }
-  if (controllerData[1].command & COMMAND_RIGHT) { // Strafe right
+  if (controllerData[1].command1 & COMMAND_LEFT) { // Strafe right
     float newPosX = posX + dirY * moveSpeed;
     float newPosY = posY - dirX * moveSpeed;
     if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.' &&
@@ -1635,8 +1768,8 @@ void handle3DGameInputs() {
     }
   }
 
-  // Rotation with b
-  if (controllerData[1].b == -1) { // Rotate left
+  // Rotation with command2
+  if (controllerData[1].command2 & COMMAND_RIGHT) { // Rotate left
     float oldDirX = dirX;
     dirX = dirX * cos(rotSpeed) - dirY * sin(rotSpeed);
     dirY = oldDirX * sin(rotSpeed) + dirY * cos(rotSpeed);
@@ -1644,7 +1777,7 @@ void handle3DGameInputs() {
     planeX = planeX * cos(rotSpeed) - planeY * sin(rotSpeed);
     planeY = oldPlaneX * sin(rotSpeed) + planeY * cos(rotSpeed);
   }
-  if (controllerData[1].b == 1) { // Rotate right
+  if (controllerData[1].command2 & COMMAND_LEFT) { // Rotate right
     float oldDirX = dirX;
     dirX = dirX * cos(-rotSpeed) - dirY * sin(-rotSpeed);
     dirY = oldDirX * sin(-rotSpeed) + dirY * cos(-rotSpeed);
@@ -1653,31 +1786,23 @@ void handle3DGameInputs() {
     planeY = oldPlaneX * sin(-rotSpeed) + planeY * cos(-rotSpeed);
   }
 
-  // Shooting with d
-  static bool canShoot = true;
-  if (controllerData[1].d && canShoot) { // Player 1 shooting
-      for (int i = 0; i < maxBullets; i++) {
-          if (!bullets[i].active) {
-              bullets[i].x = posX;
-              bullets[i].y = posY;
-              bullets[i].dirX = dirX;
-              bullets[i].dirY = dirY;
-              bullets[i].active = true;
-              bullets[i].shooter = 1;  // Assign Player 1 as the shooter
-              canShoot = false;  // Prevent continuous shooting
-              Serial.println("Bullet fired");
-              Serial.print("Bullet position: ");
-              Serial.print(bullets[i].x);
-              Serial.print(", ");
-              Serial.println(bullets[i].y);
-
-              break;
-          }
-      }
-  }
-  if (!controllerData[1].d) {
-    canShoot = true;
-  }
+  // Shooting with button2
+    static unsigned long lastShootTimeP1 = 0;
+    unsigned long currentMillis = millis();
+    if ((controllerData[1].button2 == LOW) && (currentMillis - lastShootTimeP1 >= shootCooldown)) { // Player 1 shooting
+        for (int i = 0; i < maxBullets; i++) {
+            if (!bullets[i].active) {
+                bullets[i].x = posX;
+                bullets[i].y = posY;
+                bullets[i].dirX = dirX;
+                bullets[i].dirY = dirY;
+                bullets[i].active = true;
+                bullets[i].shooter = 1;  // Assign Player 1 as the shooter
+                lastShootTimeP1 = currentMillis; // Update last shoot time
+                break;
+            }
+        }
+    }
 }
 
 // Function to draw the minimap
@@ -2206,8 +2331,9 @@ void run3DGameTwoPlayer() {
   unsigned long currentMillis = millis();
 
   if (gameState3D == GAME_OVER_3D) {
+    stopSong();  // Stop the song when the game is over
     display3DGameOverScreen();
-    if (controllerData[1].d || controllerData[2].d) {  // Use Select button to return to menu
+    if ((controllerData[1].button2 == LOW) || (controllerData[2].button2 == LOW)) {  // Use Select button to return to menu
       delay(200);
       appState = MENU_MAIN;
       displayMenuMain();
@@ -2219,6 +2345,9 @@ void run3DGameTwoPlayer() {
     handle3DGameInputsPlayer2();
 
     updateBullets();
+
+    // Play the song
+    playSong(DoomSong);
 
     // Check if Player 1 lost a life
     if (player1Health <= 0) {
@@ -2257,21 +2386,21 @@ void run3DGameTwoPlayer() {
 }
 
 void resetPlayerPositions() {
-  // Reset Player 1 position to the top-left corner of the map
-  posX = 1.5f;   // Player 1 X position near the top-left corner
-  posY = 1.5f;   // Player 1 Y position near the top-left corner
-  dirX = 1.0f;   // Player 1 facing right
-  dirY = 0.0f;
-  planeX = 0.0f;
-  planeY = 0.66f;
+    // Reset Player 1 position to the top-left corner of the map
+    posX = 1.5f;   // Player 1 X position near the top-left corner
+    posY = 1.5f;   // Player 1 Y position near the top-left corner
+    dirX = 1.0f;   // Player 1 facing right
+    dirY = 0.0f;
+    planeX = 0.0f;
+    planeY = 0.66f;
 
-  // Reset Player 2 position to the bottom-right corner of the map
-  posX2 = mapWidth3D - 2.5f;   // Player 2 X position near the bottom-right corner
-  posY2 = mapHeight3D - 2.5f;  // Player 2 Y position near the bottom-right corner
-  dirX2 = -1.0f;   // Player 2 facing left
-  dirY2 = 0.0f;
-  planeX2 = 0.0f;
-  planeY2 = 0.66f;
+    // Reset Player 2 position to the bottom-right corner of the map
+    posX2 = mapWidth3D - 2.5f;   // Player 2 X position near the bottom-right corner
+    posY2 = mapHeight3D - 2.5f;  // Player 2 Y position near the bottom-right corner
+    dirX2 = -1.0f;   // Player 2 facing left
+    dirY2 = 0.0f;
+    planeX2 = 0.0f;
+    planeY2 = 0.66f;
 }
 
 // Function to handle inputs for Player 2
@@ -2280,7 +2409,7 @@ void handle3DGameInputsPlayer2() {
   float rotSpeed = 0.05f;  // Rotation speed
 
   // Movement Forward/Backward for Player 2
-  if (controllerData[2].command & COMMAND_UP) { // Move forward
+  if (controllerData[2].command1 & COMMAND_UP) { // Move forward
     float newPosX = posX2 + dirX2 * moveSpeed;
     float newPosY = posY2 + dirY2 * moveSpeed;
     if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
@@ -2288,7 +2417,7 @@ void handle3DGameInputsPlayer2() {
       posY2 = newPosY;
     }
   }
-  if (controllerData[2].command & COMMAND_DOWN) { // Move backward
+  if (controllerData[2].command1 & COMMAND_DOWN) { // Move backward
     float newPosX = posX2 - dirX2 * moveSpeed;
     float newPosY = posY2 - dirY2 * moveSpeed;
     if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
@@ -2298,7 +2427,7 @@ void handle3DGameInputsPlayer2() {
   }
 
   // Strafing Left/Right for Player 2
-  if (controllerData[2].command & COMMAND_LEFT) { // Strafe left
+  if (controllerData[2].command1 & COMMAND_LEFT) { // Strafe left
     float newPosX = posX2 - dirY2 * moveSpeed;
     float newPosY = posY2 + dirX2 * moveSpeed;
     if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
@@ -2306,7 +2435,7 @@ void handle3DGameInputsPlayer2() {
       posY2 = newPosY;
     }
   }
-  if (controllerData[2].command & COMMAND_RIGHT) { // Strafe right
+  if (controllerData[2].command1 & COMMAND_RIGHT) { // Strafe right
     float newPosX = posX2 + dirY2 * moveSpeed;
     float newPosY = posY2 - dirX2 * moveSpeed;
     if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
@@ -2315,8 +2444,8 @@ void handle3DGameInputsPlayer2() {
     }
   }
 
-  // Rotation for Player 2 with b
-  if (controllerData[2].b == -1) { // Rotate left
+  // Rotation with command2
+  if (controllerData[2].command2 & COMMAND_LEFT) { // Rotate left
     float oldDirX = dirX2;
     dirX2 = dirX2 * cos(rotSpeed) - dirY2 * sin(rotSpeed);
     dirY2 = oldDirX * sin(rotSpeed) + dirY2 * cos(rotSpeed);
@@ -2324,7 +2453,7 @@ void handle3DGameInputsPlayer2() {
     planeX2 = planeX2 * cos(rotSpeed) - planeY2 * sin(rotSpeed);
     planeY2 = oldPlaneX * sin(rotSpeed) + planeY2 * cos(rotSpeed);
   }
-  if (controllerData[2].b == 1) { // Rotate right
+  if (controllerData[2].command2 & COMMAND_RIGHT) { // Rotate right
     float oldDirX = dirX2;
     dirX2 = dirX2 * cos(-rotSpeed) - dirY2 * sin(-rotSpeed);
     dirY2 = oldDirX * sin(-rotSpeed) + dirY2 * cos(-rotSpeed);
@@ -2333,10 +2462,10 @@ void handle3DGameInputsPlayer2() {
     planeY2 = oldPlaneX * sin(-rotSpeed) + planeY2 * cos(-rotSpeed);
   }
 
-    // Add shooting logic for Player 2
-  static bool canShootP2 = true;
-  if (controllerData[2].d && canShootP2) { // Player 2 shooting
-      Serial.println("Player 2 is shooting!");
+  // Shooting logic for Player 2
+  static unsigned long lastShootTimeP2 = 0;
+  unsigned long currentMillis = millis();
+  if ((controllerData[2].button2 == LOW) && (currentMillis - lastShootTimeP2 >= shootCooldown)) { // Player 2 shooting
       for (int i = 0; i < maxBullets; i++) {
           if (!bullets[i].active) {
               bullets[i].x = posX2;
@@ -2345,13 +2474,10 @@ void handle3DGameInputsPlayer2() {
               bullets[i].dirY = dirY2;
               bullets[i].active = true;
               bullets[i].shooter = 2;  // Assign Player 2 as the shooter
-              canShootP2 = false;  // Prevent continuous shooting
+              lastShootTimeP2 = currentMillis; // Update last shoot time
               break;
           }
       }
-  }
-  if (!controllerData[2].d) {
-      canShootP2 = true;  // Allow shooting when button is released
   }
 }
 
@@ -2700,7 +2826,7 @@ void enterPlayerName(char* playerName) {
   gfx.print("Select to confirm");
 
   // Handle input
-  if (controllerData[1].b == -1) {
+  if (controllerData[1].button1 == LOW) {
     // Decrement character
     if (inputName[charIndex] == '_') {
       inputName[charIndex] = 'Z';
@@ -2711,7 +2837,7 @@ void enterPlayerName(char* playerName) {
     }
     delay(200);
   }
-  if (controllerData[1].b == 1) {
+  if (controllerData[1].button3 == LOW) {
     // Increment character
     if (inputName[charIndex] == '_') {
       inputName[charIndex] = 'A';
@@ -2722,7 +2848,7 @@ void enterPlayerName(char* playerName) {
     }
     delay(200);
   }
-  if (controllerData[1].d) {
+  if (controllerData[1].button2 == LOW) {
     // Move to next character
     if (charIndex < 2) {
       charIndex++;
@@ -2823,6 +2949,54 @@ void saveHighScore(const char* gameName, const char* playerName) {
     file.close();
   }
 }
+
+// Function to start playing the song
+void startSong(Song &song) {
+  isSongPlaying = true;
+  noteStartTime = millis();
+  currentNoteIndex = 0;
+  beatDuration = calculateBeatDuration(song.bpm);
+  ledcWriteTone(pwmChannel, song.notes[0][0]);  // Start with the first note
+}
+
+// Function to stop playing the song
+void stopSong() {
+  isSongPlaying = false;
+  ledcWriteTone(pwmChannel, 0);  // Stop the tone
+}
+
+// Function to play the song (non-blocking)
+void playSong(Song &song) {
+  if (!isSongPlaying) return;
+
+  unsigned long currentTime = millis();
+  float durationInBeats = song.notes[currentNoteIndex][1];
+  unsigned long noteDuration = beatDuration * durationInBeats;
+
+  if (currentTime - noteStartTime >= noteDuration) {
+    // Move to the next note
+    currentNoteIndex++;
+    if (currentNoteIndex >= song.length) {
+      // Restart the song or stop it
+      currentNoteIndex = 0;  // Loop the song
+      // Alternatively, you can stop the song:
+      // stopSong();
+      // return;
+    }
+
+    // Play the next note
+    int noteFrequency = song.notes[currentNoteIndex][0];
+    ledcWriteTone(pwmChannel, noteFrequency);
+    noteStartTime = currentTime;
+  }
+}
+
+// Function to calculate the duration of a beat in milliseconds based on BPM
+int calculateBeatDuration(int bpm) {
+  return 60000 / bpm;  // 60000 ms in a minute
+}
+
+
 
 // =========================
 // Utility Functions
