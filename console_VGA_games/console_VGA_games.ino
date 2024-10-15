@@ -11,7 +11,18 @@
 #include <stack>
 #include <cstdlib>  // For random generation
 #include <ctime>    // For seeding random generation
+#include <vector>
+#include <algorithm>
 
+struct Sprite {
+    float x, y;      // Position in the game world
+    int texture;     // Identifier for the sprite type (e.g., 0 for bullets, 1 for player)
+    float distance;  // Distance from the player (to be calculated)
+    int shooter;     // For bullets, to know who shot it (1 or 2); not used for players
+};
+
+// Add this at the top of your file
+std::vector<Sprite> sprites;
 
 // Joystick Command Definitions
 #define COMMAND_NO     0x00
@@ -140,7 +151,6 @@ int calculateTextHeight(int textSize);
 void runSelectedGame();
 void runPong(bool isSinglePlayer);
 void handlePlayerInputs(bool isSinglePlayer);
-void updateBall();
 void checkPaddleCollisions();
 void drawGame();
 void resetBall();
@@ -166,7 +176,7 @@ void run3DGame();
 void initializeMonsters();
 void updateBullets();
 void renderMonsters(float ZBuffer[]);
-void renderBullets();
+void renderBullets(float playerX, float playerY, float dirX, float dirY, float planeX, float planeY, int screenOffset, float ZBuffer[]);
 bool checkCollisionWithMonsters(float x, float y);
 void drawFrame3D();
 void handle3DGameInputs();
@@ -176,8 +186,8 @@ void run3DGameTwoPlayer();
 void handle3DGameInputsPlayer2();
 void drawFrame3DTwoPlayer();
 void renderOtherPlayerOnScreen(float posX, float posY, float posX2, float posY2, float ZBufferP1[], float ZBufferP2[]);
-
-
+void generateRandomMaze();
+void resetPlayerPositions();
 
 // Leaderboard Functions
 void displayLeaderboard(const char* gameName);
@@ -295,9 +305,6 @@ const int mapHeight3D = 16;
 
 char worldMap3D[mapWidth3D * mapHeight3D];
 
-
-
-
 // Timing for 3D Game
 unsigned long previousMillis3D = 0;
 const long interval3D = 16;  // Frame update interval (~60 FPS)
@@ -315,7 +322,9 @@ struct Bullet {
     float dirX;
     float dirY;
     bool active;
+    int shooter; // 1 for Player 1, 2 for Player 2
 };
+
 
 const int maxMonsters = 10;
 Monster monsters[maxMonsters];
@@ -343,10 +352,17 @@ float planeX = 0.0f, planeY = 0.66f; // Player 1 camera plane
 float posX2 = 10.0f, posY2 = 10.0f;   // Player 2 position
 float dirX2 = -1.0f, dirY2 = 0.0f;  // Player 2 direction vector
 float planeX2 = 0.0f, planeY2 = 0.66f; // Player 2 camera plane
-
-int player2Lives = 3;
-int player2Health = 3;
 bool twoPlayerMode = false;
+
+// Player Health and Lives
+int player1Health = 8;
+int player2Health = 8;
+int player1Lives = 3;
+int player2Lives = 3;
+
+
+
+
 
 // =========================
 // Setup Function
@@ -538,16 +554,32 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
           fbNewHighScore = false;
         }
         else if (strcmp(selectedGame, "Doom") == 0) {
-          // Initialize 3D game variables
-          posX = 8.0f;
-          posY = 8.0f;
-          dirX = -1.0f;
-          dirY = 0.0f;
-          planeX = 0.0f;
-          planeY = 0.66f;
-          generateRandomMaze();
-          initializeMonsters();
-          gameState3D = GAME_PLAYING_3D;
+          if (currentPlayerCountItem == 1) { // Two-player mode selected
+            twoPlayerMode = true;
+            // Initialize 3D game variables
+            generateRandomMaze();
+            initializeMonsters();
+            resetPlayerPositions();   // Reset player positions
+            gameState3D = GAME_PLAYING_3D;
+            player1Health = 8;        // Reset health
+            player2Health = 8;
+            player1Lives = 3;         // Reset lives
+            player2Lives = 3;
+          } else {
+            twoPlayerMode = false;
+            // Initialize 3D game variables for single player
+            posX = 8.0f;
+            posY = 8.0f;
+            dirX = -1.0f;
+            dirY = 0.0f;
+            planeX = 0.0f;
+            planeY = 0.66f;
+            generateRandomMaze();
+            initializeMonsters();
+            gameState3D = GAME_PLAYING_3D;
+            player1Health = 8;        // Reset health
+            player1Lives = 3;         // Reset lives
+          }
         }
       }
     } else {
@@ -565,13 +597,14 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     }
   }
   else if (appState == NAME_ENTRY) {
-    // Handle name entry inputs
+    // Handle name entry for high score
     // Implementation will be in enterPlayerName function
   }
   else if (appState == GAME_RUNNING) {
     // Game is running, inputs are handled within the game functions
   }
 }
+
 
 // =========================
 // Menu Display Functions
@@ -842,11 +875,6 @@ void setupServe(bool isSinglePlayer) {
     ballSpeedY = ballSpeed * sin(angle);
     ballSpeedX = playerServe ? ballSpeed * cos(angle) : -ballSpeed * cos(angle);
   }
-}
-
-// Function to update ball and check collisions
-void updateBall() {
-  // Ball position updated in runPong()
 }
 
 // Check for paddle collisions
@@ -1627,18 +1655,25 @@ void handle3DGameInputs() {
 
   // Shooting with d
   static bool canShoot = true;
-  if (controllerData[1].d && canShoot) { // Use d (select button) for shooting
-    for (int i = 0; i < maxBullets; i++) {
-      if (!bullets[i].active) {
-        bullets[i].x = posX;
-        bullets[i].y = posY;
-        bullets[i].dirX = dirX;
-        bullets[i].dirY = dirY;
-        bullets[i].active = true;
-        canShoot = false; // Prevent continuous shooting
-        break;
+  if (controllerData[1].d && canShoot) { // Player 1 shooting
+      for (int i = 0; i < maxBullets; i++) {
+          if (!bullets[i].active) {
+              bullets[i].x = posX;
+              bullets[i].y = posY;
+              bullets[i].dirX = dirX;
+              bullets[i].dirY = dirY;
+              bullets[i].active = true;
+              bullets[i].shooter = 1;  // Assign Player 1 as the shooter
+              canShoot = false;  // Prevent continuous shooting
+              Serial.println("Bullet fired");
+              Serial.print("Bullet position: ");
+              Serial.print(bullets[i].x);
+              Serial.print(", ");
+              Serial.println(bullets[i].y);
+
+              break;
+          }
       }
-    }
   }
   if (!controllerData[1].d) {
     canShoot = true;
@@ -1666,12 +1701,70 @@ void drawMinimap(float playerX, float playerY, uint16_t playerColor, int offsetX
   gfx.fillCircle(playerMinimapX, playerMinimapY, minimapTileSize / 2, playerColor); // Draw the player as a small circle
 }
 
-
-
-  // Exit to main menu (e.g., by pressing a specific button combination)
-  // Implement exit logic if needed
-
 // Function to Draw Each Frame of the 3D Game
+
+void renderSprites(float playerX, float playerY, float dirX, float dirY, float planeX, float planeY, int screenOffset, float ZBuffer[], const std::vector<Sprite>& sprites) {
+    int screenWidth = mode.hRes / 2; // Each player's screen width
+
+    for (const auto& sprite : sprites) {
+        // Transform sprite position to camera space
+        float spriteX = sprite.x - playerX;
+        float spriteY = sprite.y - playerY;
+
+        float invDet = 1.0f / (planeX * dirY - dirX * planeY); // Required for correct matrix multiplication
+
+        float transformX = invDet * (dirY * spriteX - dirX * spriteY);
+        float transformY = invDet * (-planeY * spriteX + planeX * spriteY);
+
+        if (transformY <= 0.1f) continue; // Sprite is behind the camera
+
+        int spriteScreenX = int((screenWidth / 2) * (1 + transformX / transformY));
+
+        // Parameters for scaling the sprite
+        int spriteHeight, spriteWidth;
+
+        // Adjust size based on sprite type
+        if (sprite.texture == 0) { // Bullet
+            spriteHeight = abs(int(mode.vRes / transformY)) / 4;
+            spriteWidth = spriteHeight;
+        } else if (sprite.texture == 1) { // Player
+            spriteHeight = abs(int(mode.vRes / transformY));
+            spriteWidth = spriteHeight / 2;
+        }
+
+        int drawStartY = -spriteHeight / 2 + mode.vRes / 2;
+        if (drawStartY < 0) drawStartY = 0;
+        int drawEndY = spriteHeight / 2 + mode.vRes / 2;
+        if (drawEndY >= mode.vRes) drawEndY = mode.vRes - 1;
+
+        int drawStartX = spriteScreenX - spriteWidth / 2;
+        int drawEndX = spriteScreenX + spriteWidth / 2;
+
+        // Ensure drawing coordinates are within the screen boundaries
+        if (drawStartX < 0) drawStartX = 0;
+        if (drawEndX >= screenWidth) drawEndX = screenWidth - 1;
+
+        // Draw the sprite if it's closer than the wall
+        for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
+            int bufferIndex = stripe;
+            if (bufferIndex >= 0 && bufferIndex < screenWidth) {
+                if (transformY < ZBuffer[bufferIndex]) {
+                    uint16_t color;
+
+                    if (sprite.texture == 0) { // Bullet
+                        color = (sprite.shooter == 1) ? 0xFFE0 : 0xF81F; // Yellow for Player 1's bullets, Pink for Player 2's
+                    } else if (sprite.texture == 1) { // Player
+                        color = (screenOffset == 0) ? 0x001F : 0xF800; // Blue or Red depending on which screen
+                    } else {
+                        color = 0xFFFF; // Default color (white)
+                    }
+
+                    gfx.drawFastVLine(screenOffset + stripe, drawStartY, drawEndY - drawStartY, color);
+                }
+            }
+        }
+    }
+}
 
 void drawFrame3D() {
   // Clear the screen
@@ -1770,10 +1863,43 @@ void drawFrame3D() {
 
   // Render monsters and bullets
   renderMonsters(ZBuffer);
-  renderBullets();
+  renderBullets(posX, posY, dirX, dirY, planeX, planeY, 0, ZBuffer);
 
   // Draw the minimap in the top right corner for player 1
   drawMinimap(posX, posY, redColor, mode.hRes - minimapSize - 10, 10);
+}
+
+void drawHeart(int x, int y, uint16_t fillColor, uint16_t outlineColor) {
+    // Draw the outline of the heart (white outline)
+    gfx.fillCircle(x - 3, y - 2, 3, outlineColor);  // Left circle
+    gfx.fillCircle(x + 3, y - 2, 3, outlineColor);  // Right circle
+    gfx.fillTriangle(x - 6, y - 2, x + 6, y - 2, x, y + 6, outlineColor); // Triangle for the bottom part
+
+    // Draw the filled heart in the player's color
+    gfx.fillCircle(x - 3, y - 2, 2, fillColor);  // Left circle
+    gfx.fillCircle(x + 3, y - 2, 2, fillColor);  // Right circle
+    gfx.fillTriangle(x - 5, y - 2, x + 5, y - 2, x, y + 5, fillColor); // Triangle for the bottom part
+}
+
+void displayPlayerLives(int lives, int playerHealth, int x, int y, uint16_t heartColor) {
+    // Display hearts
+    for (int i = 0; i < lives; i++) {
+        int heartX = x + i * 15;  // Space the hearts 15 pixels apart
+        drawHeart(heartX, y, heartColor, 0xFFFF);  // 0xFFFF is the white outline
+    }
+    
+    // Calculate health bar position
+    int barWidth = 45;   // The health bar width should match the number of hearts
+    int barHeight = 10;          // Height of the health bar
+    int healthBarY = y + 10;     // Position the health bar directly under the hearts
+
+    // Draw the white border for the health bar
+
+
+    // Calculate and fill the current health portion of the bar
+    int healthWidth = (barWidth * playerHealth) / 8;  // Adjust based on the player's health
+    gfx.fillRect(x -5, healthBarY, healthWidth, barHeight, heartColor);  // Fill health bar with player's color
+    gfx.drawRect(x - 5, healthBarY, barWidth, barHeight, 0xFFFF);  // White border
 }
 
 void drawFrame3DTwoPlayer() {
@@ -1851,6 +1977,44 @@ void drawFrame3DTwoPlayer() {
     ZBuffer1[x] = perpWallDist;
   }
 
+
+  // Collect sprites for Player 1
+  sprites.clear();
+
+  // Add bullets
+  for (int i = 0; i < maxBullets; i++) {
+      if (bullets[i].active) {
+          Sprite sprite;
+          sprite.x = bullets[i].x;
+          sprite.y = bullets[i].y;
+          sprite.texture = 0; // Bullet
+          sprite.shooter = bullets[i].shooter;
+          sprites.push_back(sprite);
+      }
+  }
+
+  // Add other player
+  Sprite otherPlayerSprite;
+  otherPlayerSprite.x = posX2;
+  otherPlayerSprite.y = posY2;
+  otherPlayerSprite.texture = 1; // Player
+  sprites.push_back(otherPlayerSprite);
+
+  // Calculate distances and sort sprites for Player 1
+  for (auto& sprite : sprites) {
+      float dx = sprite.x - posX;
+      float dy = sprite.y - posY;
+      sprite.distance = dx * dx + dy * dy;
+  }
+
+  std::sort(sprites.begin(), sprites.end(), [](const Sprite& a, const Sprite& b) {
+      return a.distance > b.distance;
+  });
+
+  // Render sprites for Player 1
+  renderSprites(posX, posY, dirX, dirY, planeX, planeY, 0, ZBuffer1, sprites);
+
+
   // Draw Player 2 view
   float ZBuffer2[mode.hRes / 2]; // Z-buffer for Player 2
   for (int x = 0; x < mode.hRes / 2; x++) {
@@ -1922,13 +2086,68 @@ void drawFrame3DTwoPlayer() {
     ZBuffer2[x] = perpWallDist;
   }
 
-  // Render other player on each screen
-  renderOtherPlayerOnScreen(posX, posY, posX2, posY2, ZBuffer1, ZBuffer2);
+  // Collect sprites for Player 2
+  sprites.clear();
+
+  // Add bullets
+  for (int i = 0; i < maxBullets; i++) {
+      if (bullets[i].active) {
+          Sprite sprite;
+          sprite.x = bullets[i].x;
+          sprite.y = bullets[i].y;
+          sprite.texture = 0; // Bullet
+          sprite.shooter = bullets[i].shooter;
+          sprites.push_back(sprite);
+      }
+  }
+
+  // Add other player
+  otherPlayerSprite.x = posX;
+  otherPlayerSprite.y = posY;
+  otherPlayerSprite.texture = 1; // Player
+  sprites.push_back(otherPlayerSprite);
+
+  // Calculate distances and sort sprites for Player 2
+  for (auto& sprite : sprites) {
+      float dx = sprite.x - posX2;
+      float dy = sprite.y - posY2;
+      sprite.distance = dx * dx + dy * dy;
+  }
+
+  std::sort(sprites.begin(), sprites.end(), [](const Sprite& a, const Sprite& b) {
+      return a.distance > b.distance;
+  });
+
+  // Render sprites for Player 2
+  renderSprites(posX2, posY2, dirX2, dirY2, planeX2, planeY2, mode.hRes / 2, ZBuffer2, sprites);
+
+  // Draw dividing line
+  gfx.drawFastVLine(mode.hRes / 2, 0, mode.vRes, 0xFFFF);  // White line
+
+  // Draw minimaps and other UI elements as before
+  drawMinimap(posX, posY, redColor, mode.hRes / 2 - minimapSize - 10, 10); // Player 1 minimap
+  drawMinimap(posX2, posY2, blueColor, mode.hRes - minimapSize - 10, 10); // Player 2 minimap
+
+  displayPlayerLives(player1Lives, player1Health, mode.hRes / 2 - minimapSize, minimapSize + 20, redColor);  // Player 1
+  displayPlayerLives(player2Lives, player2Health, mode.hRes - minimapSize, minimapSize + 20, blueColor);  // Player 2
+
+
+  gfx.drawFastVLine(mode.hRes / 2, 0, mode.vRes, 0xFFFF);  // 0xFFFF is the color for white
 
   // Draw minimaps for both players
   drawMinimap(posX, posY, redColor, mode.hRes / 2 - minimapSize - 10, 10); // Player 1 minimap
   drawMinimap(posX2, posY2, blueColor, mode.hRes - minimapSize - 10, 10); // Player 2 minimap
+
+  // Display Player 1 lives and health
+  // void displayPlayerLives(int lives, int playerHealth, int x, int y, uint16_t heartColor)
+
+  displayPlayerLives(player1Lives, player1Health, mode.hRes / 2 - minimapSize, minimapSize + 20, redColor);  // Player 1
+
+  // Display Player 2 lives and health
+  displayPlayerLives(player2Lives, player2Health, mode.hRes - minimapSize, minimapSize + 20, blueColor);  // Player 2
+
 }
+
 
 void renderOtherPlayerOnScreen(float posX1, float posY1, float posX2, float posY2, float ZBufferP1[], float ZBufferP2[]) {
   // Render Player 2 on Player 1's screen
@@ -1940,10 +2159,13 @@ void renderOtherPlayerOnScreen(float posX1, float posY1, float posX2, float posY
 
   if (transformY > 0) {
     int spriteScreenX = int((mode.hRes / 4) * (1 + transformX / transformY));
-    int spriteHeight = abs(int(mode.vRes / transformY)) / 2;
+
+        // Adjust the sprite's width and height for a 1x2 ratio
+    int spriteHeight = abs(int(mode.vRes / transformY));  // Full height
+    int spriteWidth = spriteHeight / 2;                   // Half the height
+
     int drawStartY = -spriteHeight / 2 + mode.vRes / 2;
     int drawEndY = spriteHeight / 2 + mode.vRes / 2;
-    int spriteWidth = spriteHeight;
     int drawStartX = -spriteWidth / 2 + spriteScreenX;
     int drawEndX = spriteWidth / 2 + spriteScreenX;
 
@@ -1996,12 +2218,60 @@ void run3DGameTwoPlayer() {
     handle3DGameInputs();
     handle3DGameInputsPlayer2();
 
+    updateBullets();
+
+    // Check if Player 1 lost a life
+    if (player1Health <= 0) {
+      player1Lives--;
+      if (player1Lives > 0) {
+        // Reset the maze, player positions, and health when a life is lost
+        generateRandomMaze();          // Reset to a new maze
+        resetPlayerPositions();        // Reset players' positions
+        player1Health = 8;             // Reset player health to 8
+        player2Health = 8;             // Also reset Player 2's health
+      } else {
+        gameState3D = GAME_OVER_3D;
+      }
+    }
+
+    // Check if Player 2 lost a life
+    if (player2Health <= 0) {
+      player2Lives--;
+      if (player2Lives > 0) {
+        // Reset the maze, player positions, and health when a life is lost
+        generateRandomMaze();          // Reset to a new maze
+        resetPlayerPositions();        // Reset players' positions
+        player1Health = 8;             // Also reset Player 1's health
+        player2Health = 8;             // Reset player health to 8
+      } else {
+        gameState3D = GAME_OVER_3D;
+      }
+    }
+
     // Update and draw frame at regular intervals
     if (currentMillis - previousMillis3D >= interval3D) {
       previousMillis3D = currentMillis;
       drawFrame3DTwoPlayer();
     }
   }
+}
+
+void resetPlayerPositions() {
+  // Reset Player 1 position to the top-left corner of the map
+  posX = 1.5f;   // Player 1 X position near the top-left corner
+  posY = 1.5f;   // Player 1 Y position near the top-left corner
+  dirX = 1.0f;   // Player 1 facing right
+  dirY = 0.0f;
+  planeX = 0.0f;
+  planeY = 0.66f;
+
+  // Reset Player 2 position to the bottom-right corner of the map
+  posX2 = mapWidth3D - 2.5f;   // Player 2 X position near the bottom-right corner
+  posY2 = mapHeight3D - 2.5f;  // Player 2 Y position near the bottom-right corner
+  dirX2 = -1.0f;   // Player 2 facing left
+  dirY2 = 0.0f;
+  planeX2 = 0.0f;
+  planeY2 = 0.66f;
 }
 
 // Function to handle inputs for Player 2
@@ -2062,6 +2332,27 @@ void handle3DGameInputsPlayer2() {
     planeX2 = planeX2 * cos(-rotSpeed) - planeY2 * sin(-rotSpeed);
     planeY2 = oldPlaneX * sin(-rotSpeed) + planeY2 * cos(-rotSpeed);
   }
+
+    // Add shooting logic for Player 2
+  static bool canShootP2 = true;
+  if (controllerData[2].d && canShootP2) { // Player 2 shooting
+      Serial.println("Player 2 is shooting!");
+      for (int i = 0; i < maxBullets; i++) {
+          if (!bullets[i].active) {
+              bullets[i].x = posX2;
+              bullets[i].y = posY2;
+              bullets[i].dirX = dirX2;
+              bullets[i].dirY = dirY2;
+              bullets[i].active = true;
+              bullets[i].shooter = 2;  // Assign Player 2 as the shooter
+              canShootP2 = false;  // Prevent continuous shooting
+              break;
+          }
+      }
+  }
+  if (!controllerData[2].d) {
+      canShootP2 = true;  // Allow shooting when button is released
+  }
 }
 
 // Function to Display Game Over Screen for 3D Game
@@ -2073,7 +2364,23 @@ void display3DGameOverScreen() {
   gfx.print("GAME OVER");
   gfx.setTextSize(1);
   gfx.setCursor(mode.hRes / 2 - 70, mode.vRes / 2 + 10);
+
+  if (player1Lives <= 0 && player2Lives <= 0) {
+    gfx.print("It's a Tie!");
+  } else if (player1Lives <= 0) {
+    gfx.print("Player 2 Wins!");
+  } else if (player2Lives <= 0) {
+    gfx.print("Player 1 Wins!");
+  }
+
+  gfx.setCursor(mode.hRes / 2 - 70, mode.vRes / 2 + 30);
   gfx.print("Press Select to return");
+
+  // Reset health and lives when game ends
+  player1Health = 8;
+  player2Health = 8;
+  player1Lives = 3;
+  player2Lives = 3;
 }
 
 // Function to Initialize Monsters
@@ -2092,44 +2399,48 @@ void initializeMonsters() {
 
 // Function to Update Bullets
 void updateBullets() {
-  float bulletSpeed = 0.1f;
-  for (int i = 0; i < maxBullets; i++) {
-    if (bullets[i].active) {
-      bullets[i].x += bullets[i].dirX * bulletSpeed;
-      bullets[i].y += bullets[i].dirY * bulletSpeed;
+    float bulletSpeed = 0.1f;
+    for (int i = 0; i < maxBullets; i++) {
+        if (bullets[i].active) {
+            bullets[i].x += bullets[i].dirX * bulletSpeed;
+            bullets[i].y += bullets[i].dirY * bulletSpeed;
 
-      // Check if bullet hits a wall
-      if (worldMap3D[int(bullets[i].y) * mapWidth3D + int(bullets[i].x)] == '#') {
-        bullets[i].active = false;
-      }
+            // Check if bullet hits a wall
+            if (worldMap3D[int(bullets[i].y) * mapWidth3D + int(bullets[i].x)] == '#') {
+                bullets[i].active = false;
+            }
 
-      // Check for collision with monsters
-      for (int j = 0; j < maxMonsters; j++) {
-        if (monsters[j].alive) {
-          float dx = bullets[i].x - monsters[j].x;
-          float dy = bullets[i].y - monsters[j].y;
-          float distance = sqrt(dx * dx + dy * dy);
-          if (distance < 0.5f) { // Collision threshold
-            monsters[j].alive = false;
-            bullets[i].active = false;
-            // Check if all monsters are defeated
-            bool allDefeated = true;
-            for (int k = 0; k < maxMonsters; k++) {
-              if (monsters[k].alive) {
-                allDefeated = false;
-                break;
-              }
+            // Check bullet collision with Player 1
+            if (bullets[i].shooter == 2) {  // Only check if Player 2 shot the bullet
+                float distanceToPlayer1 = sqrt(pow(bullets[i].x - posX, 2) + pow(bullets[i].y - posY, 2));
+                if (distanceToPlayer1 < 0.5f && bullets[i].active) {
+                    bullets[i].active = false;
+                    player1Health--;
+                    if (player1Health <= 0) {
+                        player1Lives--;
+                        if (player1Lives <= 0) gameState3D = GAME_OVER_3D;  // Player 1 loses
+                        player1Health = 8;  // Reset health
+                    }
+                }
             }
-            if (allDefeated) {
-              gameState3D = GAME_OVER_3D;
+
+            // Check bullet collision with Player 2
+            if (bullets[i].shooter == 1) {  // Only check if Player 1 shot the bullet
+                float distanceToPlayer2 = sqrt(pow(bullets[i].x - posX2, 2) + pow(bullets[i].y - posY2, 2));
+                if (distanceToPlayer2 < 0.5f && bullets[i].active) {
+                    bullets[i].active = false;
+                    player2Health--;
+                    if (player2Health <= 0) {
+                        player2Lives--;
+                        if (player2Lives <= 0) gameState3D = GAME_OVER_3D;  // Player 2 loses
+                        player2Health = 8;  // Reset health
+                    }
+                }
             }
-            break;
-          }
         }
-      }
     }
-  }
 }
+
 
 // Function to Check Collision with Monsters
 bool checkCollisionWithMonsters(float x, float y) {
@@ -2214,44 +2525,48 @@ void renderMonsters(float ZBuffer[]) {
 }
 
 // Function to Render Bullets
-void renderBullets() {
-  for (int i = 0; i < maxBullets; i++) {
-    if (bullets[i].active) {
-      // Translate bullet position to relative to camera
-      float bulletX = bullets[i].x - posX;
-      float bulletY = bullets[i].y - posY;
+void renderBullets(float playerX, float playerY, float dirX, float dirY, float planeX, float planeY, int screenOffset, float ZBuffer[]) {
+    int screenWidth = mode.hRes / 2; // Each player's screen width
+    for (int i = 0; i < maxBullets; i++) {
+        if (bullets[i].active) {
+            // Transform bullet position to camera space
+            float bulletX = bullets[i].x - playerX;
+            float bulletY = bullets[i].y - playerY;
+            float invDet = 1.0f / (planeX * dirY - dirX * planeY);
+            float transformX = invDet * (dirY * bulletX - dirX * bulletY);
+            float transformY = invDet * (-planeY * bulletX + planeX * bulletY);
 
-      // Transform to camera space
-      float invDet = 1.0f / (planeX * dirY - dirX * planeY);
-      float transformX = invDet * (dirY * bulletX - dirX * bulletY);
-      float transformY = invDet * (-planeY * bulletX + planeX * bulletY);
+            if (transformY <= 0.1f) continue; // Bullet behind the player or too close
 
-      if (transformY <= 0.1f) continue; // Bullet behind the player or too close
+            int bulletScreenX = int((screenWidth / 2) * (1 + transformX / transformY));
 
-      int bulletScreenX = int((mode.hRes / 2) * (1 + transformX / transformY));
+            // Bullet dimensions
+            int bulletHeight = abs(int(mode.vRes / transformY)) / 4; // Adjust size as needed
+            int drawStartY = -bulletHeight / 2 + mode.vRes / 2;
+            if (drawStartY < 0) drawStartY = 0;
+            int drawEndY = bulletHeight / 2 + mode.vRes / 2;
+            if (drawEndY >= mode.vRes) drawEndY = mode.vRes - 1;
 
-      // Bullet dimensions
-      int bulletHeight = abs(int(mode.vRes / transformY)) / 4; // Smaller than monsters
-      int drawStartY = -bulletHeight / 2 + mode.vRes / 2;
-      if (drawStartY < 0) drawStartY = 0;
-      int drawEndY = bulletHeight / 2 + mode.vRes / 2;
-      if (drawEndY >= mode.vRes) drawEndY = mode.vRes - 1;
+            int bulletWidth = bulletHeight;
+            int drawStartX = bulletScreenX - bulletWidth / 2;
+            int drawEndX = bulletScreenX + bulletWidth / 2;
 
-      int bulletWidth = bulletHeight;
-      int drawStartX = -bulletWidth / 2 + bulletScreenX;
-      if (drawStartX < 0) drawStartX = 0;
-      int drawEndX = bulletWidth / 2 + bulletScreenX;
-      if (drawEndX >= mode.hRes) drawEndX = mode.hRes - 1;
+            // Ensure drawing coordinates are within the screen boundaries
+            if (drawStartX < 0) drawStartX = 0;
+            if (drawEndX >= screenWidth) drawEndX = screenWidth - 1;
 
-      // Draw the bullet
-      for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
-        if (stripe > 0 && stripe < mode.hRes) {
-          // Draw vertical line for the bullet
-          gfx.drawFastVLine(stripe, drawStartY, drawEndY - drawStartY, 0xFFE0); // Yellow color
+            // Draw the bullet if it's closer than the wall
+            for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
+                int bufferIndex = stripe;
+                if (bufferIndex >= 0 && bufferIndex < screenWidth) {
+                    if (transformY < ZBuffer[bufferIndex]) {
+                        uint16_t bulletColor = (bullets[i].shooter == 1) ? 0xFFE0 : 0xF81F; // Yellow for Player 1, Pink for Player 2
+                        gfx.drawFastVLine(screenOffset + stripe, drawStartY, drawEndY - drawStartY, bulletColor);
+                    }
+                }
+            }
         }
-      }
     }
-  }
 }
 
 // =========================
