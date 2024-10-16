@@ -121,6 +121,12 @@ int currentMainMenuItem = 0;       // Current selection in the main menu
 int currentPlayerCountItem = 0;    // Current selection in the player count menu
 const char* selectedGame = nullptr; // Pointer to the selected game
 
+// Add this near the top where you define your menu items
+const char* pauseMenuItems[] = {"Resume Game", "Exit Game", "Volume Up", "Volume Down"};
+const int totalPauseMenuItems = sizeof(pauseMenuItems) / sizeof(pauseMenuItems[0]);
+
+int currentPauseMenuItem = 0; // Current selection in the pause menu
+
 
 // =========================
 // Timing Variables
@@ -131,6 +137,7 @@ const long startupDuration = 5000; // Display "Scorpio" for 5 seconds
 // Timing variables for debouncing
 unsigned long lastNavInputTime = 0;
 unsigned long lastSelectInputTime = 0;
+const unsigned long debounceDelay = 20; // Debounce interval in milliseconds
 const unsigned long debounceInterval = 200; // Debounce interval in milliseconds
 const unsigned long debouncePause = 500; // Debounce interval in milliseconds
 
@@ -138,7 +145,11 @@ const unsigned long debouncePause = 500; // Debounce interval in milliseconds
 unsigned long lastButton1PressTime = 0;
 unsigned long lastButton2PressTime = 0;
 unsigned long lastButton3PressTime = 0;
-const unsigned long debounceDelay = 20; // Debounce interval in milliseconds
+
+
+unsigned long lastButton3PressTime1 = 0; // For Player 1
+unsigned long lastButton3PressTime2 = 0; // For Player 2
+
 
 
 
@@ -609,49 +620,75 @@ void setup() {
 // =========================
 
 void loop() {
-  unsigned long currentMillis = millis();
+    unsigned long currentMillis = millis();  // Current time for debounce and timing
 
-  switch(appState) {
-    case STARTUP:
-      if (currentMillis - startupStartTime >= startupDuration) {
-        appState = MENU_MAIN;
-        displayMenuMain();
-      } else {
-        // Keep displaying the startup screen
-        displayStartupScreen();
-      }
-      break;
+    switch(appState) {
+        case STARTUP:
+            if (currentMillis - startupStartTime >= startupDuration) {
+                appState = MENU_MAIN;
+                displayMenuMain();
+            } else {
+                // Keep displaying the startup screen
+                displayStartupScreen();
+            }
+            break;
 
-    case MENU_MAIN:
-      // Continuously display the main menu to prevent flickering
-      displayMenuMain();
-      break;
+        case MENU_MAIN:
+            // Continuously display the main menu to prevent flickering
+            displayMenuMain();
+            back(appState, currentMillis);  // Call the back function and pass currentMillis
+            break;
 
-    case MENU_PLAYER_COUNT:
-      // Continuously display the player count menu to prevent flickering
-      displayMenuPlayerCount();
-      break;
+        case MENU_PLAYER_COUNT:
+            // Continuously display the player count menu to prevent flickering
+            displayMenuPlayerCount();
+            back(appState, currentMillis);  // Call the back function and pass currentMillis
+            break;
 
-    case DISPLAY_LEADERBOARD:
-      displayLeaderboard(selectedGame);
-      break;
+        case DISPLAY_LEADERBOARD:
+            displayLeaderboard(selectedGame);
+            back(appState, currentMillis);  // Call the back function and pass currentMillis
+            break;
 
-    case NAME_ENTRY:
-      // Handle name entry for high score
-      enterPlayerName(playerName);
-      break;
+        case NAME_ENTRY:
+            // Handle name entry for high score
+            enterPlayerName(playerName);
+            back(appState, currentMillis);  // Call the back function and pass currentMillis
+            break;
 
-    case GAME_RUNNING:
-      runSelectedGame();
-      break;
+        case GAME_RUNNING:
+            runSelectedGame();
+            checkPause(); // Add this line to continuously check for pause input
+            break;
 
-    case PAUSE_MENU:
-      displayPauseMenu();
-      break;
+        case PAUSE_MENU:
+            displayPauseMenu();
+            break;
+    }
+
+    // Refresh the VGA display
+    vga.show();
+}
+
+void back(AppState state, unsigned long currentMillis) {
+  // Check if button 1 is pressed and debounce is respected
+  if (controllerData[1].button1 == LOW && (currentMillis - lastSelectInputTime >= debounceInterval)) {
+    lastSelectInputTime = currentMillis;
+    
+    // Navigate back depending on the current appState
+    if (state == MENU_MAIN) {
+      appState = STARTUP;  // Go back to STARTUP screen from MAIN MENU
+    }
+    else if (state == MENU_PLAYER_COUNT) {
+      appState = MENU_MAIN;  // Go back to MAIN MENU from PLAYER COUNT MENU
+    }
+    else if (state == DISPLAY_LEADERBOARD) {
+      appState = MENU_PLAYER_COUNT;  // Go back to PLAYER COUNT MENU from LEADERBOARD
+    }
+    else if (state == NAME_ENTRY) {
+      appState = MENU_PLAYER_COUNT;  // Go back to PLAYER COUNT MENU from NAME ENTRY
+    }
   }
-
-  // Refresh the VGA display
-  vga.show();
 }
 
 // =========================
@@ -802,6 +839,36 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   else if (appState == GAME_RUNNING) {
     // Game is running, inputs are handled within the game functions
   }
+  else if (appState == PAUSE_MENU) {
+    unsigned long currentMillis = millis();
+
+    // Handle navigation in pause menu
+    if ((data.command1 & COMMAND_DOWN) && (currentMillis - lastNavInputTime >= debounceInterval)) { // Move down
+        currentPauseMenuItem = (currentPauseMenuItem + 1) % totalPauseMenuItems;
+        lastNavInputTime = currentMillis; // Debounce navigation input
+    } else if ((data.command1 & COMMAND_UP) && (currentMillis - lastNavInputTime >= debounceInterval)) { // Move up
+        currentPauseMenuItem = (currentPauseMenuItem - 1 + totalPauseMenuItems) % totalPauseMenuItems;
+        lastNavInputTime = currentMillis; // Debounce navigation input
+    }
+
+    // Handle selection
+    if (data.button2 == LOW && (currentMillis - lastSelectInputTime >= debounceInterval)) { // Select button pressed
+        lastSelectInputTime = currentMillis; // Debounce select button
+
+        // Perform action based on the selected menu item
+        if (strcmp(pauseMenuItems[currentPauseMenuItem], "Resume Game") == 0) {
+            appState = GAME_RUNNING; // Resume the game
+        } else if (strcmp(pauseMenuItems[currentPauseMenuItem], "Exit Game") == 0) {
+            appState = MENU_MAIN; // Exit to main menu
+            stopSong();
+            displayMenuMain();
+        } else if (strcmp(pauseMenuItems[currentPauseMenuItem], "Volume Up") == 0) {
+            adjustVolume(10); // Increase volume
+        } else if (strcmp(pauseMenuItems[currentPauseMenuItem], "Volume Down") == 0) {
+            adjustVolume(-10); // Decrease volume
+        }
+    }
+  }
 }
 
 
@@ -943,17 +1010,37 @@ void runSelectedGame() {
 }
 
 void checkPause() {
-  unsigned long currentMillis = millis();
-    // Check if Button 3 is pressed to enter pause menu
-  if (controllerData[1].button3 == LOW) {
-    if (currentMillis - lastButton3PressTime >= debouncePause) {
-      appState = PAUSE_MENU;
-      lastButton3PressTime = currentMillis; // Update debounce time
-      return;
+    unsigned long currentMillis = millis();
+
+    // Check if Button 3 on Player 1 is pressed to enter pause menu
+    if (controllerData[1].button3 == LOW) {
+        if (currentMillis - lastButton3PressTime1 >= debouncePause) {
+            appState = PAUSE_MENU;
+            lastButton3PressTime1 = currentMillis; // Update debounce time
+            return;
+        }
     }
-  } else {
-    lastButton3PressTime = currentMillis; // Reset debounce timer if button is released
-  }
+
+    // Check if Button 3 on Player 2 is pressed to enter pause menu
+    if (controllerData.find(2) != controllerData.end()) { // Ensure Player 2 exists
+        if (controllerData[2].button3 == LOW) {
+            if (currentMillis - lastButton3PressTime2 >= debouncePause) {
+                appState = PAUSE_MENU;
+                lastButton3PressTime2 = currentMillis; // Update debounce time
+                return;
+            }
+        }
+    }
+
+    // Reset debounce times if buttons are released
+    if (controllerData[1].button3 != LOW) {
+        lastButton3PressTime1 = currentMillis;
+    }
+    if (controllerData.find(2) != controllerData.end()) { // Ensure Player 2 exists
+        if (controllerData[2].button3 != LOW) {
+            lastButton3PressTime2 = currentMillis;
+        }
+    }
 }
 
 // Pong Game Logic
@@ -2983,75 +3070,53 @@ int calculateBeatDuration(int bpm) {
 }
 
 void displayPauseMenu() {
-  unsigned long currentMillis = millis();
+    gfx.fillScreen(blackColor);
+    gfx.setTextColor(whiteColor);
+    int textSize = 2;
+    gfx.setTextSize(textSize);
 
-  gfx.fillScreen(blackColor);
-  gfx.setTextColor(whiteColor);
-  gfx.setTextSize(2);
-  gfx.setCursor(10, 20);
-  gfx.print("Game Paused");
+    // Header
+    gfx.setCursor(10, 20);
+    gfx.print("Game Paused");
 
-  gfx.setTextSize(1);
-  gfx.setCursor(10, 60);
-  gfx.print("Volume: ");
-  gfx.print(volumeLevel);
+    // Menu Items
+    for (int i = 0; i < totalPauseMenuItems; i++) {
+        if (i == currentPauseMenuItem) {
+            gfx.setTextColor(highlightColor); // Highlight the selected item
+        } else {
+            gfx.setTextColor(whiteColor);
+        }
 
-  gfx.setCursor(10, 80);
-  gfx.print("Button 1: Increase Volume");
-  gfx.setCursor(10, 100);
-  gfx.print("Button 2: Decrease Volume");
-  gfx.setCursor(10, 120);
-  gfx.print("Button 3: Resume Game");
+        // Calculate cursor position
+        int cursorX = 20;
+        int cursorY = 60 + i * 30;
 
-  // Handle volume increase (Button 1)
-  if (controllerData[1].button1 == LOW) {
-      if (currentMillis - lastButton1PressTime >= debounceDelay) {
-          if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
-              if (volumeLevel < maxVolume) {
-                  volumeLevel += 10;
-                  if (volumeLevel > maxVolume) volumeLevel = maxVolume;
-                  ledcWrite(pwmChannel, volumeLevel); // Update volume
-              }
-              xSemaphoreGive(xSemaphore);
-          }
-          lastButton1PressTime = currentMillis;
-      }
-  } else {
-      lastButton1PressTime = currentMillis;
-  }
-
-  // Handle volume decrease (Button 2)
-  if (controllerData[1].button2 == LOW) {
-      if (currentMillis - lastButton2PressTime >= debounceDelay) {
-          if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
-              if (volumeLevel > minVolume) {
-                  volumeLevel -= 10;
-                  if (volumeLevel < minVolume) volumeLevel = minVolume;
-                  ledcWrite(pwmChannel, volumeLevel); // Update volume
-              }
-              xSemaphoreGive(xSemaphore);
-          }
-          lastButton2PressTime = currentMillis;
-      }
-  } else {
-      lastButton2PressTime = currentMillis;
-  }
-  // Handle exit from pause menu (Button 3)
-  if (controllerData[1].button3 == LOW) {
-    if (currentMillis - lastButton3PressTime >= debouncePause) {
-      appState = GAME_RUNNING;
-      lastButton3PressTime = currentMillis; // Update debounce time
-      return;
+        gfx.setCursor(cursorX, cursorY);
+        gfx.println(pauseMenuItems[i]);
     }
-  } else {
-    lastButton3PressTime = currentMillis; // Reset debounce timer if button is released
-  }
+
+    // Display current volume level
+    gfx.setTextColor(whiteColor);
+    gfx.setTextSize(1);
+    gfx.setCursor(10, screenHeight - 20);
+    gfx.print("Volume: ");
+    gfx.print(volumeLevel);
 }
 
 void audioTask(void *parameter) {
     while (1) {
         playSong(DoomSong); // Replace with the song you're playing
         vTaskDelay(1); // Yield to other tasks
+    }
+}
+
+void adjustVolume(int change) {
+    if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
+        volumeLevel += change;
+        if (volumeLevel > maxVolume) volumeLevel = maxVolume;
+        if (volumeLevel < minVolume) volumeLevel = minVolume;
+        ledcWrite(pwmChannel, volumeLevel); // Update volume
+        xSemaphoreGive(xSemaphore);
     }
 }
 
