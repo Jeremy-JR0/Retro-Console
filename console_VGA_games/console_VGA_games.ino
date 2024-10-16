@@ -665,6 +665,11 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
           resetBall();
           newHighScore = false;
         }
+        else if (strcmp(selectedGame, "Snake") == 0) {
+            // Reset Snake game variables
+            resetSnakeGame(currentPlayerCountItem == 0);
+            newSnakeHighScore = false;
+        }
         else if (strcmp(selectedGame, "Flappy Bird") == 0) {
           // Reset Flappy Bird game
           resetFlappyBirdGame(currentPlayerCountItem == 0);
@@ -882,7 +887,6 @@ void runPong(bool isSinglePlayer) {
   if (serve) {
     // Setup serve based on who serves
     setupServe(isSinglePlayer);
-    return;
   }
 
   // Handle input for player 1 and player 2 or AI based on game mode
@@ -995,13 +999,11 @@ void setupServe(bool isSinglePlayer) {
     gfx.println("Press Select to Serve");
     vga.show();
 
-    screenDrawn = true; // Set the flag
   }
 
   // Wait for player input to start the serve
   if (controllerData[1].button2 == LOW) { // Use button2 instead of data.d
     serve = false;
-    screenDrawn = false; // Reset the flag for the next serve
     float angle = (random(-30, 30)) * PI / 180.0;
     ballSpeedY = ballSpeed * sin(angle);
     ballSpeedX = playerServe ? ballSpeed * cos(angle) : -ballSpeed * cos(angle);
@@ -1224,13 +1226,15 @@ void runSnake(bool isSinglePlayer) {
     return;
   }
 
+  handleSnakeInput();
+
   if (currentMillis - lastMoveTime >= snakeSpeed) {
     lastMoveTime = currentMillis;
-    handleSnakeInput();
+    
     updateSnake();
     checkSnakeCollision();
-    drawSnakeGame();
   }
+  drawSnakeGame();
 }
 
 void resetSnakeGame(bool isSinglePlayer) {
@@ -1323,12 +1327,21 @@ void checkSnakeCollision() {
 }
 
 void drawSnakeGame() {
-    // Draw score (update as needed)
-    gfx.fillRect(0, 0, screenWidth, 20, blackColor); // Clear score area
-    gfx.setTextColor(whiteColor);
-    gfx.setCursor(10, 10);
-    gfx.print("Score: ");
-    gfx.print(snakeScore);
+  // Draw score (update as needed)
+  gfx.fillRect(0, 0, screenWidth, 20, blackColor); // Clear score area
+
+  for (const auto& segment : snake) {
+    gfx.fillRect(segment.x, segment.y, gridSize, gridSize, snakeColor);
+  }
+   
+    gfx.fillRect(foodX, foodY, gridSize, gridSize, foodColor);
+
+  // Draw the score
+  gfx.fillRect(0, 0, screenWidth, 20, blackColor); // Clear score area
+  gfx.setTextColor(whiteColor);
+  gfx.setCursor(10, 10);
+  gfx.print("Score: ");
+  gfx.print(snakeScore);
 }
 
 void generateFood() {
@@ -2866,6 +2879,12 @@ void enterPlayerName(char* playerName) {
     // Validate and save name
     saveHighScore(selectedGame, playerName);
     nameEntered = false;
+    // if (strcmp(selectedGame, "Snake") == 0) {
+    //   snakeGameInitialized = false;
+    //   snakeGameOver = false;
+    //   newSnakeHighScore = false;
+    // }
+
     appState = MENU_MAIN;
   }
 }
