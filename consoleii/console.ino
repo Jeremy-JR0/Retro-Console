@@ -14,11 +14,6 @@
 #include <vector>
 #include <algorithm>
 #include "driver/ledc.h"  // For PWM functions
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-
-SemaphoreHandle_t xSemaphore;
-
 
 // Pin definition for audio output
 const int pwmPin = 1;  // GPIO pin 1 for audio output (ensure this pin is available)
@@ -132,7 +127,6 @@ const long startupDuration = 5000; // Display "Scorpio" for 5 seconds
 unsigned long lastNavInputTime = 0;
 unsigned long lastSelectInputTime = 0;
 const unsigned long debounceInterval = 200; // Debounce interval in milliseconds
-const unsigned long debouncePause = 500; // Debounce interval in milliseconds
 
 // Debounce timing variables
 unsigned long lastButton1PressTime = 0;
@@ -340,8 +334,8 @@ int fbScore2;
 // =========================
 
 // Map Configuration for 3D Game
-const int mapWidth3D = 10;
-const int mapHeight3D = 10;
+const int mapWidth3D = 16;
+const int mapHeight3D = 16;
 
 char worldMap3D[mapWidth3D * mapHeight3D];
 
@@ -384,12 +378,12 @@ const int minimapSize = 50; // Size of the minimap in pixels
 const int minimapTileSize = minimapSize / mapWidth3D; // Size of each tile in the minimap
 
 // Player 1 Properties
-float posX = 1.5f, posY = 1.5f;   // Player 1 position
+float posX = 8.0f, posY = 8.0f;   // Player 1 position
 float dirX = -1.0f, dirY = 0.0f;  // Player 1 direction vector
 float planeX = 0.0f, planeY = 0.66f; // Player 1 camera plane
 
 // Player 2 Properties
-float posX2 = mapWidth3D - 2.5f, posY2 = mapHeight3D - 2.5f;   // Player 2 position
+float posX2 = 10.0f, posY2 = 10.0f;   // Player 2 position
 float dirX2 = -1.0f, dirY2 = 0.0f;  // Player 2 direction vector
 float planeX2 = 0.0f, planeY2 = 0.66f; // Player 2 camera plane
 bool twoPlayerMode = false;
@@ -400,7 +394,7 @@ int player2Health = 8;
 int player1Lives = 3;
 int player2Lives = 3;
 
-const unsigned long shootCooldown = 350; // Cooldown duration in milliseconds (adjust as needed)
+const unsigned long shootCooldown = 500; // Cooldown duration in milliseconds (adjust as needed)
 
 //  Frequencies
 // Octave 3
@@ -588,20 +582,6 @@ void setup() {
 
   // Attach the PWM channel to the pin
   ledcAttachPin(pwmPin, pwmChannel);
-
-  // Create the mutex
-  xSemaphore = xSemaphoreCreateMutex();
-
-  // Create the audio task
-  xTaskCreatePinnedToCore(
-      audioTask,    // Function to implement the task
-      "Audio Task", // Name of the task
-      2048,         // Stack size in words
-      NULL,         // Task input parameter
-      1,            // Priority of the task
-      NULL,         // Task handle
-      0             // Core where the task should run (0 or 1)
-  );
 }
 
 // =========================
@@ -946,7 +926,7 @@ void checkPause() {
   unsigned long currentMillis = millis();
     // Check if Button 3 is pressed to enter pause menu
   if (controllerData[1].button3 == LOW) {
-    if (currentMillis - lastButton3PressTime >= debouncePause) {
+    if (currentMillis - lastButton3PressTime >= debounceInterval) {
       appState = PAUSE_MENU;
       lastButton3PressTime = currentMillis; // Update debounce time
       return;
@@ -1453,7 +1433,7 @@ void resetFlappyBirdGame(bool isSinglePlayer) {
   fbPipeSpeed = 2;
   fbGravity = 0.3f;
   fbJumpStrength = -4.0f;
-  fbPipeGapSize = 70;
+  fbPipeGapSize = 60;
 
   if (fbIsSinglePlayer) {
     // Single-player initialization
@@ -1507,10 +1487,6 @@ void runFlappyBird(bool isSinglePlayer) {
 }
 
 void runFlappyBirdSinglePlayer() {
-
-  static float previousKalmanAnglePitch = 0.0f;
-  const float pitchThreshold = 120.0f; // Adjust this threshold as needed
-
   // Process input
   if (controllerData[1].button2 == LOW) { // Use Select button to jump
     fbBirdSpeedY = fbJumpStrength;
@@ -1518,17 +1494,10 @@ void runFlappyBirdSinglePlayer() {
 
   Serial.println(controllerData[1].mykalmanAnglePitch);
 
-  // Calculate the change in pitch
-  float deltaPitch = controllerData[1].mykalmanAnglePitch - previousKalmanAnglePitch;
-
-  // Check if the change exceeds the threshold
-  if (fabs(deltaPitch) > pitchThreshold) {
-      Serial.println("gyro active");
-      fbBirdSpeedY = fbJumpStrength;
+  if (controllerData[1].mykalmanAnglePitch > 300) {
+    Serial.println("gyro active");
+    fbBirdSpeedY = fbJumpStrength;
   }
-
-  // Update the previous pitch value
-  previousKalmanAnglePitch = controllerData[1].mykalmanAnglePitch;
 
   // Update bird position
   fbBirdSpeedY += fbGravity;
@@ -1807,7 +1776,7 @@ void generateRandomMaze() {
 // 3D Game Functions
 void handle3DGameInputs() {
   float moveSpeed = 0.05f; // Movement speed
-  float rotSpeed = 0.1f;  // Rotation speed
+  float rotSpeed = 0.05f;  // Rotation speed
   float playerRadius = 0.2f;
 
   float moveX = 0;
@@ -1865,24 +1834,6 @@ void handle3DGameInputs() {
     float oldPlaneX = planeX;
     planeX = planeX * cos(-rotSpeed) - planeY * sin(-rotSpeed);
     planeY = oldPlaneX * sin(-rotSpeed) + planeY * cos(-rotSpeed);
-  }
-
-    // Shooting logic for Player 1
-  static unsigned long lastShootTime = 0;
-  unsigned long currentMillis = millis();
-  if ((controllerData[1].button2 == LOW) && (currentMillis - lastShootTime >= shootCooldown)) { // Player 1 shooting
-      for (int i = 0; i < maxBullets; i++) {
-          if (!bullets[i].active) {
-              bullets[i].x = posX;
-              bullets[i].y = posY;
-              bullets[i].dirX = dirX;
-              bullets[i].dirY = dirY;
-              bullets[i].active = true;
-              bullets[i].shooter = 1;  // Assign Player 2 as the shooter
-              lastShootTime = currentMillis; // Update last shoot time
-              break;
-          }
-      }
   }
 }
 
@@ -1969,59 +1920,25 @@ void renderSprites(float playerX, float playerY, float dirX, float dirY, float p
                     uint16_t color;
 
                     if (sprite.texture == 0) { // Bullet
-                        color = (sprite.shooter == 1) ? 0x07FF : 0xFFE0;
+                        color = (sprite.shooter == 1) ? 0xFFE0 : 0xF81F; // Yellow for Player 1's bullets, Pink for Player 2's
                     } else if (sprite.texture == 1) { // Player
-                        // Determine color based on which screen
-                        color = (screenOffset == 0) ? 0x001F : 0xF800; // Blue or Red
-
-                        // Calculate the current pixel's position relative to the sprite
-                        float spriteColumn = (float)(stripe - drawStartX) / (drawEndX - drawStartX);
-
-                        // Calculate the height of the sprite at this stripe
-                        int spriteHeightCurrent = drawEndY - drawStartY;
-
-                        // Loop over each pixel in the column
-                        for (int y = drawStartY; y < drawEndY; y++) {
-                            // Calculate the current pixel's position relative to the sprite
-                            float spriteRow = (float)(y - drawStartY) / spriteHeightCurrent;
-
-                            if (spriteRow < 0.5f) {
-                                // Top half (Circle)
-                                float dx = spriteColumn - 0.5f;
-                                float dy = spriteRow - 0.25f; // Center the circle in the top half
-                                if (dx * dx + dy * dy <= 0.0625f) { // Adjust radius as needed
-                                    gfx.drawPixel(screenOffset + stripe, y, color);
-                                }
-                            } else {
-                                // Bottom half (Upside-Down Triangle)
-                                float triangleWidth = 1.0f - 2.0f * (spriteRow - 0.5f);
-                                if (spriteColumn >= 0.5f - triangleWidth / 2 && spriteColumn <= 0.5f + triangleWidth / 2) {
-                                    gfx.drawPixel(screenOffset + stripe, y, color);
-                                }
-                            }
-                        }
+                        color = (screenOffset == 0) ? 0x001F : 0xF800; // Blue or Red depending on which screen
                     } else {
                         color = 0xFFFF; // Default color (white)
                     }
 
-                    // For bullets, we still draw vertical lines
-                    if (sprite.texture == 0) {
-                        gfx.drawFastVLine(screenOffset + stripe, drawStartY, drawEndY - drawStartY, color);
-                    }
+                    gfx.drawFastVLine(screenOffset + stripe, drawStartY, drawEndY - drawStartY, color);
                 }
             }
         }
     }
 }
 
-void displayPlayerLives(int lives, int playerHealth, int x, int y) {
-    // Use white color for hearts and health bars
-    uint16_t heartColor = 0xFFFF; // White color
-
+void displayPlayerLives(int lives, int playerHealth, int x, int y, uint16_t heartColor) {
     // Display hearts
     for (int i = 0; i < lives; i++) {
         int heartX = x + i * 15;  // Space the hearts 15 pixels apart
-        drawHeart(heartX, y, heartColor, heartColor);  // Use white for both fill and outline
+        drawHeart(heartX, y, heartColor, 0xFFFF);  // 0xFFFF is the white outline
     }
     
     // Calculate health bar position
@@ -2030,11 +1947,12 @@ void displayPlayerLives(int lives, int playerHealth, int x, int y) {
     int healthBarY = y + 10;     // Position the health bar directly under the hearts
 
     // Draw the white border for the health bar
-    gfx.drawRect(x - 5, healthBarY, barWidth, barHeight, heartColor);  // White border
+
 
     // Calculate and fill the current health portion of the bar
     int healthWidth = (barWidth * playerHealth) / 8;  // Adjust based on the player's health
-    gfx.fillRect(x -5, healthBarY, healthWidth, barHeight, heartColor);  // Fill health bar with white color
+    gfx.fillRect(x -5, healthBarY, healthWidth, barHeight, heartColor);  // Fill health bar with player's color
+    gfx.drawRect(x - 5, healthBarY, barWidth, barHeight, 0xFFFF);  // White border
 }
 
 void drawFrame3DTwoPlayer() {
@@ -2263,11 +2181,24 @@ void drawFrame3DTwoPlayer() {
   drawMinimap(posX, posY, redColor, mode.hRes / 2 - minimapSize - 10, 10); // Player 1 minimap
   drawMinimap(posX2, posY2, blueColor, mode.hRes - minimapSize - 10, 10); // Player 2 minimap
 
-  displayPlayerLives(player1Lives, player1Health, mode.hRes / 2 - minimapSize, minimapSize + 20);  // Player 1
-  displayPlayerLives(player2Lives, player2Health, mode.hRes - minimapSize, minimapSize + 20);  // Player 2
+  displayPlayerLives(player1Lives, player1Health, mode.hRes / 2 - minimapSize, minimapSize + 20, redColor);  // Player 1
+  displayPlayerLives(player2Lives, player2Health, mode.hRes - minimapSize, minimapSize + 20, blueColor);  // Player 2
 
 
   gfx.drawFastVLine(mode.hRes / 2, 0, mode.vRes, 0xFFFF);  // 0xFFFF is the color for white
+
+  // Draw minimaps for both players
+  drawMinimap(posX, posY, redColor, mode.hRes / 2 - minimapSize - 10, 10); // Player 1 minimap
+  drawMinimap(posX2, posY2, blueColor, mode.hRes - minimapSize - 10, 10); // Player 2 minimap
+
+  // Display Player 1 lives and health
+  // void displayPlayerLives(int lives, int playerHealth, int x, int y, uint16_t heartColor)
+
+  displayPlayerLives(player1Lives, player1Health, mode.hRes / 2 - minimapSize, minimapSize + 20, redColor);  // Player 1
+
+  // Display Player 2 lives and health
+  displayPlayerLives(player2Lives, player2Health, mode.hRes - minimapSize, minimapSize + 20, blueColor);  // Player 2
+
 }
 
 void drawHeart(int x, int y, uint16_t fillColor, uint16_t outlineColor) {
@@ -2369,7 +2300,7 @@ void run3DGameTwoPlayer() {
     updateBullets();
 
     // Play the song
-    // playSong(DoomSong);
+    playSong(DoomSong);
 
     // Check if Player 1 lost a life
     if (player1Health <= 0) {
@@ -2428,7 +2359,7 @@ void resetPlayerPositions() {
 // Function to handle inputs for Player 2
 void handle3DGameInputsPlayer2() {
   float moveSpeed = 0.05f; // Movement speed
-  float rotSpeed = 0.1f;  // Rotation speed
+  float rotSpeed = 0.05f;  // Rotation speed
 
   // Movement Forward/Backward for Player 2
   if (controllerData[2].command1 & COMMAND_UP) { // Move forward
@@ -2514,11 +2445,11 @@ void display3DGameOverScreen() {
   gfx.setCursor(mode.hRes / 2 - 70, mode.vRes / 2 + 10);
 
   if (player1Lives <= 0 && player2Lives <= 0) {
-      gfx.print("It's a Tie!");
+    gfx.print("It's a Tie!");
   } else if (player1Lives <= 0) {
-      gfx.print("Player 2 Wins!");
+    gfx.print("Player 2 Wins!");
   } else if (player2Lives <= 0) {
-      gfx.print("Player 1 Wins!");
+    gfx.print("Player 1 Wins!");
   }
 
   gfx.setCursor(mode.hRes / 2 - 70, mode.vRes / 2 + 30);
@@ -2547,7 +2478,7 @@ void initializeMonsters() {
 
 // Function to Update Bullets
 void updateBullets() {
-    float bulletSpeed = 0.2f;
+    float bulletSpeed = 0.1f;
     for (int i = 0; i < maxBullets; i++) {
         if (bullets[i].active) {
             bullets[i].x += bullets[i].dirX * bulletSpeed;
@@ -2916,65 +2847,48 @@ void saveHighScore(const char* gameName, const char* playerName) {
   }
 }
 
+// Function to start playing the song
 void startSong(Song &song) {
-    if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
-        isSongPlaying = true;
-        noteStartTime = millis();
-        currentNoteIndex = 0;
-        beatDuration = calculateBeatDuration(song.bpm);
-        ledcWriteTone(pwmChannel, song.notes[0][0]);  // Start with the first note
-        ledcWrite(pwmChannel, volumeLevel); // Set initial volume
-        xSemaphoreGive(xSemaphore);
-    }
+  isSongPlaying = true;
+  noteStartTime = millis();
+  currentNoteIndex = 0;
+  beatDuration = calculateBeatDuration(song.bpm);
+  ledcWriteTone(pwmChannel, song.notes[0][0]);  // Start with the first note
+  ledcWrite(pwmChannel, volumeLevel); // Set initial volume
 }
 
+// Function to stop playing the song
 void stopSong() {
-    if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
-        isSongPlaying = false;
-        ledcWriteTone(pwmChannel, 0);  // Stop the tone
-        ledcWrite(pwmChannel, 0);      // Set duty cycle to 0
-        xSemaphoreGive(xSemaphore);
-    }
+  isSongPlaying = false;
+  ledcWriteTone(pwmChannel, 0);  // Stop the tone
+  ledcWrite(pwmChannel, 0);      // Set duty cycle to 0
 }
 
 // Function to play the song (non-blocking)
-// Modify playSong() if necessary to ensure it is thread-safe and non-blocking
 void playSong(Song &song) {
-    if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
-          if (!isSongPlaying) {
-              xSemaphoreGive(xSemaphore);
-              vTaskDelay(10);
-              return;
-          }
-      if (!isSongPlaying) {
-          vTaskDelay(10); // Sleep for a while if no song is playing
-          return;
-      }
+  if (!isSongPlaying) return;
 
-      unsigned long currentTime = millis();
-      float durationInBeats = song.notes[currentNoteIndex][1];
-      unsigned long noteDuration = beatDuration * durationInBeats;
+  unsigned long currentTime = millis();
+  float durationInBeats = song.notes[currentNoteIndex][1];
+  unsigned long noteDuration = beatDuration * durationInBeats;
 
-      if (currentTime - noteStartTime >= noteDuration) {
-          // Move to the next note
-          currentNoteIndex++;
-          if (currentNoteIndex >= song.length) {
-              // Restart the song or stop it
-              currentNoteIndex = 0;  // Loop the song
-              // Alternatively, you can stop the song:
-              // stopSong();
-              // return;
-          }
-
-          // Play the next note
-          int noteFrequency = song.notes[currentNoteIndex][0];
-          ledcWriteTone(pwmChannel, noteFrequency);
-          ledcWrite(pwmChannel, volumeLevel); // Set volume
-          noteStartTime = currentTime;
-      }
-      xSemaphoreGive(xSemaphore);
+  if (currentTime - noteStartTime >= noteDuration) {
+    // Move to the next note
+    currentNoteIndex++;
+    if (currentNoteIndex >= song.length) {
+      // Restart the song or stop it
+      currentNoteIndex = 0;  // Loop the song
+      // Alternatively, you can stop the song:
+      // stopSong();
+      // return;
     }
-  vTaskDelay(1); // Yield to other tasks
+
+    // Play the next note
+    int noteFrequency = song.notes[currentNoteIndex][0];
+    ledcWriteTone(pwmChannel, noteFrequency);
+    ledcWrite(pwmChannel, volumeLevel); // Set volume
+    noteStartTime = currentTime;
+  }
 }
 
 // Function to calculate the duration of a beat in milliseconds based on BPM
@@ -3005,40 +2919,35 @@ void displayPauseMenu() {
 
   // Handle volume increase (Button 1)
   if (controllerData[1].button1 == LOW) {
-      if (currentMillis - lastButton1PressTime >= debounceDelay) {
-          if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
-              if (volumeLevel < maxVolume) {
-                  volumeLevel += 10;
-                  if (volumeLevel > maxVolume) volumeLevel = maxVolume;
-                  ledcWrite(pwmChannel, volumeLevel); // Update volume
-              }
-              xSemaphoreGive(xSemaphore);
-          }
-          lastButton1PressTime = currentMillis;
+    if (currentMillis - lastButton1PressTime >= debounceDelay) {
+      if (volumeLevel < maxVolume) {
+        volumeLevel += 10; // Adjust increment as needed
+        if (volumeLevel > maxVolume) volumeLevel = maxVolume;
+        ledcWrite(pwmChannel, volumeLevel); // Update volume
+        lastButton1PressTime = currentMillis; // Update debounce time
       }
+    }
   } else {
-      lastButton1PressTime = currentMillis;
+    lastButton1PressTime = currentMillis; // Reset debounce timer if button is released
   }
 
   // Handle volume decrease (Button 2)
   if (controllerData[1].button2 == LOW) {
-      if (currentMillis - lastButton2PressTime >= debounceDelay) {
-          if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
-              if (volumeLevel > minVolume) {
-                  volumeLevel -= 10;
-                  if (volumeLevel < minVolume) volumeLevel = minVolume;
-                  ledcWrite(pwmChannel, volumeLevel); // Update volume
-              }
-              xSemaphoreGive(xSemaphore);
-          }
-          lastButton2PressTime = currentMillis;
+    if (currentMillis - lastButton2PressTime >= debounceDelay) {
+      if (volumeLevel > minVolume) {
+        volumeLevel -= 10; // Adjust decrement as needed
+        if (volumeLevel < minVolume) volumeLevel = minVolume;
+        ledcWrite(pwmChannel, volumeLevel); // Update volume
+        lastButton2PressTime = currentMillis; // Update debounce time
       }
+    }
   } else {
-      lastButton2PressTime = currentMillis;
+    lastButton2PressTime = currentMillis; // Reset debounce timer if button is released
   }
+
   // Handle exit from pause menu (Button 3)
   if (controllerData[1].button3 == LOW) {
-    if (currentMillis - lastButton3PressTime >= debouncePause) {
+    if (currentMillis - lastButton3PressTime >= debounceDelay) {
       appState = GAME_RUNNING;
       lastButton3PressTime = currentMillis; // Update debounce time
       return;
@@ -3047,15 +2956,6 @@ void displayPauseMenu() {
     lastButton3PressTime = currentMillis; // Reset debounce timer if button is released
   }
 }
-
-void audioTask(void *parameter) {
-    while (1) {
-        playSong(DoomSong); // Replace with the song you're playing
-        vTaskDelay(1); // Yield to other tasks
-    }
-}
-
-
 
 
 // =========================
