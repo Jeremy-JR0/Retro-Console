@@ -27,6 +27,8 @@ const int pwmPin = 1;  // GPIO pin 1 for audio output (ensure this pin is availa
 const int pwmChannel = 0;  // PWM channel 0
 const int resolution = 8;   // 8-bit resolution for PWM
 
+int previousButton3State1 = HIGH;
+int previousButton3State2 = HIGH;
 
 struct Sprite {
     float x, y;      // Position in the game world
@@ -111,7 +113,7 @@ std::map<String, int> controllerMap;  // Key: MAC address string, Value: Control
 // Menu Items
 // =========================
 
-const char* mainMenuItems[] = {"Pong", "Snake", "Flappy Bird", "Doom"};
+const char* mainMenuItems[] = {"Pong", "Snake", "Flappy Bird", "Maze Hunter"};
 const int totalMainMenuItems = sizeof(mainMenuItems) / sizeof(mainMenuItems[0]);
 
 const char* playerCountMenuItems[] = {"Single Player", "Two Player", "Leaderboard"};
@@ -126,6 +128,8 @@ const char* pauseMenuItems[] = {"Resume Game", "Exit Game", "Volume Up", "Volume
 const int totalPauseMenuItems = sizeof(pauseMenuItems) / sizeof(pauseMenuItems[0]);
 
 int currentPauseMenuItem = 0; // Current selection in the pause menu
+
+
 
 
 // =========================
@@ -149,9 +153,6 @@ unsigned long lastButton3PressTime = 0;
 
 unsigned long lastButton3PressTime1 = 0; // For Player 1
 unsigned long lastButton3PressTime2 = 0; // For Player 2
-
-
-
 
 // =========================
 // Color Definitions
@@ -202,14 +203,17 @@ void runSelectedGame();
 void runPong(bool isSinglePlayer);
 void handlePlayerInputs(bool isSinglePlayer);
 void checkPaddleCollisions();
-void drawGame();
+void drawGame(bool isSinglePlayer);
 void resetBall();
 void handlePaddleCollision(int paddleX, int paddleY, bool isPlayerPaddle);
 void drawCenterLine();
-void displayScores();
+void displayScores(bool isSinglePlayer);
 void checkWinCondition();
 void displayWinMessage(const char* winner);
 void setupServe(bool isSinglePlayer);
+bool lineIntersectsRect(float x1, float y1, float x2, float y2, float rectLeft, float rectTop, float rectRight, float rectBottom);
+bool lineIntersectsLine(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4);
+
 
 // Flappy Bird Functions
 void resetFlappyBirdGame(bool isSinglePlayer);
@@ -241,16 +245,27 @@ void displayLeaderboard(const char* gameName);
 void updateLeaderboard(const char* gameName, int score);
 void enterPlayerName(char* playerName);
 void displayKeyboard(char* playerName, int maxLength);
+void audioTask(void *parameter);
+void stopSong();
+void adjustVolume(int change);
+
+// Snake Game
+void runSnake(bool);
+
 
 int volumeLevel = 128; // Initial volume level (0 - 255)
 const int maxVolume = 255;
 const int minVolume = 0;
+bool songFinished = false;  // Global flag to indicate song completion
 
 // =========================
 // Game Variables (Pong)
 // =========================
 
 // Ball Properties
+// Previous Ball Position
+float prevBallX;
+float prevBallY;
 float ballX;
 float ballY;
 float ballRadius = 3;        // Radius of the ball
@@ -269,6 +284,16 @@ int playerSpeed = 5;     // Speed of player paddle
 int aiPaddleX = mode.hRes - 25; // X position of AI paddle (right side)
 int aiPaddleY;                  // Y position of AI paddle
 int aiSpeed = 4;                // Speed of AI paddle
+
+// Define the line segment of the ball's movement
+float ballDeltaX;
+float ballDeltaY;
+
+// Player Paddle Rectangle
+float paddleLeft;
+float paddleRight;
+float paddleTop;
+float paddleBottom;
 
 // Scoring
 int playerScore = 0;
@@ -360,13 +385,6 @@ char worldMap3D[mapWidth3D * mapHeight3D];
 unsigned long previousMillis3D = 0;
 const long interval3D = 16;  // Frame update interval (~60 FPS)
 
-// Monster and Bullet Structures
-struct Monster {
-    float x;
-    float y;
-    bool alive;
-};
-
 struct Bullet {
     float x;
     float y;
@@ -375,10 +393,6 @@ struct Bullet {
     bool active;
     int shooter; // 1 for Player 1, 2 for Player 2
 };
-
-
-const int maxMonsters = 10;
-Monster monsters[maxMonsters];
 
 const int maxBullets = 5;
 Bullet bullets[maxBullets];
@@ -456,14 +470,34 @@ const int A5  = 880;
 const int As5 = 932;  // A#5 / B♭5
 const int B5  = 988;
 
+// Octave 6
+const int C6  = 1047;
+const int Cs6 = 1109;  // C#6 / D♭6
+const int D6  = 1175;
+const int Ds6 = 1245;  // D#6 / E♭6
+const int E6  = 1319;
+const int F6  = 1397;
+const int Fs6 = 1480;  // F#6 / G♭6
+const int G6  = 1568;
+const int Gs6 = 1661;  // G#6 / A♭6
+const int A6  = 1760;
+const int As6 = 1865;  // A#6 / B♭6
+const int B6  = 1976;
+
 // Song Structure
 struct Song {
-  int bpm;  // Beats per minute
-  float (*notes)[2];  // Pointer to a 2D array where [Note, Duration_in_beats]
-  int length;  // Length of the song (number of notes)
+    int bpm;               // Beats per minute
+    float (*notes)[2];     // Pointer to a 2D array where [Note, Duration_in_beats]
+    int length;            // Number of notes in the song
+    bool loop;             // Whether the song should loop after finishing
 };
 
+void startSong(Song &song);
+
+Song currentSong;
+
 // Define the Doom song with notes and durations (in beats)
+
 float doomNotes[][2] = {
     {E3, 0.5},  // E3 for half a beat
     {E3, 0.5},  // E3 for half a beat
@@ -534,8 +568,879 @@ float doomNotes[][2] = {
 Song DoomSong = {
   250,  // BPM
   doomNotes,  // Pointer to the 2D array of notes
-  sizeof(doomNotes) / sizeof(doomNotes[0])  // Calculate the length of the array
+  sizeof(doomNotes) / sizeof(doomNotes[0]),  // Calculate the length of the array
+  true
 };
+
+float menuNotes[][2] = {
+    //LINE 1
+    {Fs4, 1},   // B4 for half a beat
+    {A4, 0.5},  // B4 for half a beat
+    {Cs5, 0.5}, // B4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {A4, 0.5},  // A4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {D4, 0.5},  // Fs4 for half a beat
+    {D4, 0.5},  // E4 for half a beat
+    {D4, 0.5},  // E4 for half a beat
+    {-1, 2},   // for a quarter beat
+    {Cs4, 0.5}, // D4 for half a beat
+    {D4, 0.5},  // E4 for half a beat
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {A4, 0.5},  // E4 for half a beat
+    {Cs5, 0.5}, // Fs4 for half a beat
+    {-1, 0.5},  // for a quarter beat
+    {A4, 0.5},  // Fs4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {Fs4, 0.5}, // D4 for half a beat
+    {E5, 1.5},  // E4 for half a beat
+    {Ds5, 0.5}, // Fs4 for three-quarters of a beat
+    {D5, 1},    // D4 for one beat
+    {-1, 0.5},   // for a quarter beat
+
+    //LINE 2
+    {Gs4, 1},   // E4 for three-quarters of a beat
+    {Cs5, 0.5}, // Fs4 for three-quarters of a beat    
+    {Fs4, 0.5}, // D4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {Cs5, 0.5}, // E4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {Gs4, 0.5}, // Fs4 for two beats    
+    {-1, 0.5},   // for a quarter beat
+    {Cs5, 0.5}, // Fs4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {G4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5}, // D4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {E4, 0.5},  // E4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {E4, 0.5},  // Fs4 for three-quarters of a beat
+    {E4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {-1.5, 0.5}, // for a quarter beat
+    {E4, 0.5},  // Fs4 for three-quarters of a beat
+    {E4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {-1, 1.5}, // for a quarter beat
+    {Ds4, 1},   // Fs4 for two beats
+    {D4, 1},    // Fs4 for half a beat
+
+    //LINE 3
+    {Cs4, 1},   // Fs4 for half a beat
+    {A4, 0.5},  // D4 for half a beat
+    {Cs5, 0.5},  // E4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {A4, 0.5},  // Fs4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {E4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {E4, 0.5},  // Fs4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {E5, 0.5},  // D4 for half a beat
+    {E5, 0.5},  // D4 for half a beat
+    {E5, 0.5},  // B3 for three beats
+    {-1, 0.5},   // for a quarter beat
+    {Fs4, 0.5}, // B4 for half a beat
+    {A4, 0.5},  // B4 for half a beat
+    {Cs5, 0.5}, // B4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {A4, 0.5},  // A4 for half a beat
+    {-1, 0.5},   // for a quarter beat
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {Cs5, 2},   // B4 for two beats
+    {B4, 1},    // B4 for one beat
+    {-1, 0.5},   // for a quarter beat
+
+    //LINE 4
+    {B4, 0.5},  // B4 for half a beat
+    {G4, 0.5},  // A4 for half a beat
+    {D4, 0.5},  // Fs4 for half a beat
+    {Cs4, 1},   // B4 for half a beat
+    {B4, 0.5},  // A4 for half a beat
+    {G4, 0.5},  // Fs4 for half a beat
+    {Cs4, 0.5},  // B4 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {C4, 0.5},  // B4 for half a beat
+    {B3, 1},    // A4 for half a beat
+    {F4, 0.5},  // Fs4 for half a beat
+    {D4, 0.5},  // B4 for half a beat
+    {B3, 0.5},  // A4 for half a beat
+    {E4, 0.5},  // Fs4 for half a beat
+    {E4, 0.5},  // B4 for half a beat
+    {E4, 0.5},  // A4 for half a beat
+    {-1, 2},   // for a quarter beat
+    {As4, 0.5},  // Fs4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {C5, 0.5},  // A4 for half a beat
+    {D5, 0.5},  // Fs4 for half a beat
+    {Fs5, 0.5},  // B4 for half a beat
+    {A5, 1},    // A4 for one beat
+    {-1, 3},   // for a quarter beat
+    {A3, 1},    // Fs4 for half a beat
+    {As3, 1},   // B4 for half a beat
+
+    //LINE 5
+    {B3, 1.5},  // A4 for half a beat
+    {As3, 0.5},  // Fs4 for half a beat
+    {B3, 3},    // B4 for three beats
+    {A3, 0.5},  // A4 for half a beat
+    {As3, 0.5},  // Fs4 for half a beat
+    {B3, 0.5},  // B4 for half a beat
+    {Fs4, 1},   // A4 for half a beat
+    {Cs4, 0.5},  // Fs4 for half a beat
+    {B3, 1.5},  // B4 for half a beat
+    {As3, 0.5},  // A4 for half a beat
+    {B3, 4},    // Fs4 for half a beat
+    {B3, 1},    // B4 for half a beat
+    {B3, 1},    // B4 for half a beat
+
+    //LINE 6
+    {Cs4, 1.5},  // A4 for half a beat
+    {C4, 0.5},  // Fs4 for half a beat
+    {Cs4, 3},    // B4 for three beats
+    {Cs4, 0.5},  // A4 for half a beat
+    {C4, 0.5},  // Fs4 for half a beat
+    {Cs4, 0.5},  // B4 for half a beat
+    {Gs4, 1},    // A4 for half a beat
+    {Ds4, 0.5},  // Fs4 for half a beat
+    {Cs4, 1.5},  // B4 for half a beat
+    {Ds4, 0.5},  // A4 for half a beat
+    {B3, 1.5},   // Fs4 for half a beat
+    {Cs4, 0.5},  // B4 for half a beat
+    {D4, 0.5},   // A4 for half a beat
+    {A4, 1},     // Fs4 for half a beat
+    {D4, 0.5},   // B4 for half a beat
+    {Gs4, 0.5},  // A4 for half a beat
+    {Gs4, 0.5},  // Fs4 for half a beat
+    {Gs4, 0.5},  // B4 for half a beat
+    {-1, 0.5},    // for a quarter beat
+};
+
+// Create the song struct
+Song menuSong = {
+  114,  // BPM
+  menuNotes,  // Pointer to the 2D array of notes
+  sizeof(menuNotes) / sizeof(menuNotes[0]),  // Calculate the length of the array
+  true
+};
+
+float flappyBirdNotes[][2] {
+    /*I'm in the thick of it, everybody knows
+    They know me where it snows, I skied in and they froze
+    I don't know no nothin' 'bout no ice, I'm just cold
+    Forty somethin' milli' subs or so, I've been told*/
+
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 1},  // Fs4 for one beat
+    {E4, 0.5},  // E4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {D4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 2},  // Fs4 for two beats
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {D4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 0.75},  // Fs4 for three-quarters of a beat
+    {D4, 0.75},  // D4 for three-quarters of a beat
+    {E4, 0.75},  // E4 for three-quarters of a beat
+    {Fs4, 0.75},  // Fs4 for three-quarters of a beat    
+    {D4, 0.75},  // D4 for three-quarters of a beat
+    {E4, 0.75},  // E4 for three-quarters of a beat
+    {Fs4, 2},  // Fs4 for two beats    
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {D4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 0.75},  // Fs4 for three-quarters of a beat
+    {D4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 0.75},  // Fs4 for three-quarters of a beat
+    {D4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 2},  // Fs4 for two beats
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {D4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {D4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 0.75},  // Fs4 for three-quarters of a beat
+    {D4, 0.75},  // D4 for three-quarters of a beat
+    {D4, 0.75},  // D4 for three-quarters of a beat
+    {B3, 3},  // B3 for three beats
+
+    /*I'm in my prime, and this ain't even final form
+    They knocked me down, but still, my feet, they find the floor
+    I went from living rooms straight out to sold-out tours
+    Life's a fight, but trust, I'm ready for the war*/
+
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.25},  // B4 for a quarter beat
+    {A4, 0.75},  // A4 for three-quarters of a beat
+    {A4, 0.5},  // A4 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {D4, 0.5},  // D4 for half a beat
+    {D4, 0.5},  // D4 for half a beat
+    {E4, 0.25},  // E4 for a quarter beat
+    {Fs4, 3},  // Fs4 for three beats
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.25},  // Fs4 for a quarter beat
+    {Fs4, 1},  // Fs4 for one beat
+    {E4, 0.5},  // E4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {D4, 0.5},  // D4 for half a beat
+    {B3, 3},  // B3 for three beats
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 1.5},  // A4 for one and a half beats
+    {D5, 1.5},  // D5 for one and a half beats
+    {D4, 0.5},  // D4 for half a beat
+    {D4, 0.5},  // D4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 3},  // Fs4 for three beats
+    {Fs4, 0.75},  // Fs4 for three-quarters of a beat
+    {E4, 0.75},  // E4 for three-quarters of a beat
+    {E4, 0.5},  // E4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.5},  // E4 for half a beat
+    {D4, 0.5},  // D4 for half a beat
+    {B3, 3},   // B3 for three beats
+
+    /*Woah-oh-oh
+    This is how the story goes
+    Woah-oh-oh
+    I guess this is how the story goes*/
+
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 1},    // A4 for one beat
+    {B4, 0.5},  // C5 for half a beat
+    {A4, 1},    // A4 for one beat
+    {G4, 0.5},  // G4 for half a beat
+    {Fs4, 3},   // Fs4 for three beats
+    {B3, 0.5},  // B3 for half a beat
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {D4, 0.5},  // D4 for half a beat
+    {Fs4, 3},   // Fs4 for three beats
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 1.5},  // A4 for one and a half beats
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 1.5},  // A4 for one and a half beats
+    {G4, 0.5},  // G4 for half a beat
+    {Fs4, 1.5}, // Fs4 for one and a half beats
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {D4, 0.5},  // D4 for half a beat
+    {B4, 3},    // B4 for three beats
+
+    /*I'm in the thick of it, everybody knows
+    They know me where it snows, I skied in and they froze
+    I don't know no nothin' 'bout no ice, I'm just cold
+    Forty somethin' milli' subs or so, I've been told*/
+
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B5 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 1},   // Fs5 for one beat
+    {E4, 0.5},  // E5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {D4, 0.5},  // D#5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 2},   // B5 for two beats
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {E4, 0.75},  // E5 for three-quarters of a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {E4, 0.75},  // E5 for three-quarters of a beat
+    {Fs4, 2},   // Fs5 for two beats
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 2},   // Fs5 for two beats
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {B3, 1.5},   // C5 for one and a half beats
+
+
+    /*From the screen to the ring, to the pÐµn, to the king
+    Where's my crown? That's my bling, always drama when I ring
+    See, I believe that if I see it in my heart
+    Smash through the ceiling 'cause I'm reaching for the stars*/
+
+    {B4, 0.25},  // B4 for a quarter beat
+    {B4, 0.5},   // B4 for half a beat
+    {A4, 1},     // A4 for one beat
+    {A4, 0.25},  // A4 for a quarter beat
+    {A4, 0.5},   // A4 for half a beat
+    {A4, 1},     // A4 for one beat
+    {D5, 0.25},  // D5 for a quarter beat
+    {D5, 0.5},   // D5 for half a beat
+    {D5, 1},     // D5 for one beat
+    {D4, 0.25},  // D4 for a quarter beat
+    {E4, 0.5},   // E4 for half a beat
+    {Fs4, 1},    // Fs4 for one beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 1},    // Fs4 for one beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 1},     // E4 for one beat
+    {E4, 0.5},   // E4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.25},  // E4 for a quarter beat
+    {D4, 0.5},   // D4 for half a beat
+    {B3, 2.5},   // B3 for two and a half beats
+    {B4, 0.5},   // B4 for half a beat
+    {B4, 0.5},  // Bs4 for half a beat
+    {B4, 0.25},  // B4 for a quarter beat
+    {A4, 0.5},   // A4 for half a beat
+    {A4, 0.5},   // A4 for half a beat
+    {A4, 0.5},   // A4 for half a beat
+    {D5, 0.5},   // D5 for half a beat
+    {D5, 0.5},   // D5 for half a beat
+    {D5, 0.5},   // D5 for half a beat
+    {D4, 0.5},   // D4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {Fs4, 2},    // Fs4 for two beats
+    {G4, 0.5},   // G4 for half a beat
+    {G4, 0.5},   // G4 for half a beat
+    {Fs4, 0.25}, // Fs4 for a quarter beat
+    {Fs4, 0.75}, // Fs4 for three-quarters of a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.55},  // E4 for half a beat
+    {D4, 0.25},  // D4 for a quarter beat
+    {B3, 3},      // B3 for three beats
+
+
+    /*Woah-oh-oh
+    This is how the story goes
+    Woah-oh-oh
+    I guess this is how the story goes*/
+
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 1},    // A4 for one beat
+    {B4, 0.5},  // C5 for half a beat
+    {A4, 1},    // A4 for one beat
+    {G4, 0.5},  // G4 for half a beat
+    {Fs4, 3},   // Fs4 for three beats
+    {B3, 0.5},  // B3 for half a beat
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {D4, 0.5},  // D4 for half a beat
+    {Fs4, 3},   // Fs4 for three beats
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 1.5},  // A4 for one and a half beats
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 1.5},  // A4 for one and a half beats
+    {G4, 0.5},  // G4 for half a beat
+    {Fs4, 1.5}, // Fs4 for one and a half beats
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {D4, 0.5},  // D4 for half a beat
+    {B4, 3},    // B4 for three beats
+
+    /*I'm in the thick of it, everybody knows
+    They know me where it snows, I skied in and they froze
+    I don't know no nothin' 'bout no ice, I'm just cold
+    Forty somethin' milli' subs or so, I've been told*/
+
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B5 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 1},   // Fs5 for one beat
+    {E4, 0.5},  // E5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {D4, 0.5},  // D#5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 2},   // B5 for two beats
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {E4, 0.75},  // E5 for three-quarters of a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {E4, 0.75},  // E5 for three-quarters of a beat
+    {Fs4, 2},   // Fs5 for two beats
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 2},   // Fs5 for two beats
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {B3, 1.5},   // C5 for one and a half beats
+
+    /*Highway to heaven, I'm just cruisin' by my lone'
+    They cast me out, left me for dead, them people cold
+    My faith in God, mind in the sun, I'm 'bout to sow (Yeah)
+    My life is hard, I took the wheel, I cracked the code (Yeah-yeah, woah-oh-oh)
+    Ain't nobody gon' save you, man, this life will break you (Yeah, woah-oh-oh)
+    In the thick of it, this is how the story goes*/
+
+    {B4, 0.5},   // B4 for half a beat
+    {B4, 0.5},   // B4 for half a beat
+    {B4, 0.25},  // B4 for a quarter beat
+    {A4, 0.75},  // A4 for three-quarters of a beat
+    {A4, 0.5},   // A4 for half a beat
+    {A4, 0.5},   // A4 for half a beat
+    {A4, 0.5},   // A4 for half a beat
+    {A4, 0.5},   // A4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {Fs4, 3},    // Fs4 for three beats
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.25}, // Fs4 for a quarter beat
+    {G4, 0.75},  // G4 for three-quarters of a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {D4, 0.25},  // D4 for a quarter beat
+    {E4, 0.5},   // E4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {B3, 3},      // B3 for three beats
+
+    {B4, 0.5},   // B4 for half a beat
+    {B4, 0.5},   // B4 for half a beat
+    {B4, 0.25},  // B4 for a quarter beat
+    {A4, 0.75},  // A4 for three-quarters of a beat
+    {A4, 0.5},   // A4 for half a beat
+    {A4, 0.5},   // A4 for half a beat
+    {A4, 0.25},  // A4 for a quarter beat
+    {A4, 0.5},   // A4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {Fs4, 3},    // Fs4 for three beats
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {D4, 0.25},  // D4 for a quarter beat
+    {E4, 0.75},  // E4 for three-quarters of a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {D4, 0.25},  // D4 for a quarter beat
+    {E4, 0.5},   // E4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {D4, 0.5},   // D4 for half a beat
+    {D4, 3},     // D4 for three beats
+
+    {B4, 0.5},   // B4 for half a beat
+    {A4, 1},     // A4 for one beat
+    {B4, 0.5},   // B4 for half a beat
+    {A4, 1},     // A4 for one beat
+    {G4, 0.5},   // G4 for half a beat
+    {Fs4, 2},    // Fs4 for two beats
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {Fs4, 1},    // Fs4 for one beat
+    {A4, 1},     // A4 for one beat
+    {Fs4, 1},    // Fs4 for one beat
+    {E4, 0.5},   // E4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 0.5},   // E4 for half a beat
+    {D4, 0.5},   // D4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {G4, 0.25},  // G4 for a quarter beat
+    {Fs4, 2},    // Fs4 for two beats
+    {B4, 0.5},   // B4 for half a beat
+    {A4, 1},     // A4 for one beat
+    {B4, 0.5},   // B4 for half a beat
+    {A4, 1},     // A4 for one beat
+    {G4, 0.5},   // G4 for half a beat
+    {Fs4, 2},    // Fs4 for two beats
+    {B4, 0.5},   // B4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 1.5},   // E4 for one and a half beats
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 1.5},   // E4 for one and a half beats
+    {D4, 0.5},   // D4 for half a beat
+    {B4, 3},     // B4 for three beats
+
+
+    /*I'm in the thick of it, everybody knows
+    They know me where it snows, I skied in and they froze
+    I don't know no nothin' 'bout no ice, I'm just cold
+    Forty somethin' milli' subs or so, I've been told*/
+
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B5 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 1},   // Fs5 for one beat
+    {E4, 0.5},  // E5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {D4, 0.5},  // D#5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 2},   // B5 for two beats
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {E4, 0.75},  // E5 for three-quarters of a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {E4, 0.75},  // E5 for three-quarters of a beat
+    {Fs4, 2},   // Fs5 for two beats
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 2},   // Fs5 for two beats
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {B3, 1.5},   // C5 for one and a half beats
+
+    /*I'm in the thick of it, everybody knows
+    They know me where it snows, I skied in and they froze
+    I don't know no nothin' 'bout no ice, I'm just cold
+    Forty somethin' milli' subs or so, I've been told*/
+
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B5 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 1},   // Fs5 for one beat
+    {E4, 0.5},  // E5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {D4, 0.5},  // D#5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 2},   // B5 for two beats
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {E4, 0.75},  // E5 for three-quarters of a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {E4, 0.75},  // E5 for three-quarters of a beat
+    {Fs4, 2},   // Fs5 for two beats
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 2},   // Fs5 for two beats
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {Fs4, 0.5},  // Fs5 for half a beat
+    {D4, 0.5},  // D5 for half a beat
+    {E4, 0.5},  // E5 for half a beat
+    {Fs4, 0.75},  // Fs5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {D4, 0.75},  // D5 for three-quarters of a beat
+    {B3, 1.5},   // C5 for one and a half beats
+
+    /*Woah-oh-oh
+    This is how the story goes
+    Woah-oh-oh
+    I guess this is how the story goes*/
+
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 1},    // A4 for one beat
+    {B4, 0.5},  // C5 for half a beat
+    {A4, 1},    // A4 for one beat
+    {G4, 0.5},  // G4 for half a beat
+    {Fs4, 3},   // Fs4 for three beats
+    {B3, 0.5},  // B3 for half a beat
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {D4, 0.5},  // D4 for half a beat
+    {Fs4, 3},   // Fs4 for three beats
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 1.5},  // A4 for one and a half beats
+    {B4, 0.5},  // B4 for half a beat
+    {A4, 1.5},  // A4 for one and a half beats
+    {G4, 0.5},  // G4 for half a beat
+    {Fs4, 1.5}, // Fs4 for one and a half beats
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {B4, 0.5},  // B4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {Fs4, 0.5}, // Fs4 for half a beat
+    {E4, 1.5},  // E4 for one and a half beats
+    {D4, 0.5},  // D4 for half a beat
+    {B4, 3},    // B4 for three beats
+};
+
+Song flappyBirdSong {
+  146,
+  flappyBirdNotes,
+  sizeof(flappyBirdNotes) / sizeof(flappyBirdNotes[0]),  // Length of the song
+  true
+};
+
+// Define the Snake song with notes and durations (in beats) 
+// F major
+// 115 BPM
+float snakeNotes[][2] = {
+    //LINE 1
+    {F4, 0.5},  // B4 for half a beat
+    {G4, 0.5},  // B4 for half a beat
+    {A5, 1.5},  // B4 for half a beat
+    {G4, 0.5},  // A4 for half a beat
+    {F4, 1},    // Fs4 for half a beat
+    {C5, 0.5},  // Fs4 for one beat
+    {F4, 0.5},  // E4 for half a beat
+    {G4, 2},    // E4 for two beats
+    {G4, 0.5},  // D4 for half a beat
+    {A4, 0.5},  // E4 for half a beat
+    {B4, 1.5},  // Fs4 for one and a half beats
+    {A4, 1.5},  // E4 for one and a half beats
+    {G4, 1},    // Fs4 for one beat
+
+    //LINE 2
+    {C4, 0.5},  // B4 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {G4, 1.5},  // Fs4 for one and a half beats
+    {E4, 0.5},  // Fs4 for half a beat
+    {F4, 0.5},  // E4 for half a beat
+    {G4, 0.5},  // E4 for half a beat
+    {F4, 1.5},  // D4 for one and a half beats
+    {A4, 1.5},  // E4 for one and a half beats
+    {F4, 1},    // Fs4 for one beat
+    {G4, 0.5},  // E4 for half a beat
+    {A5, 0.5},  // Fs4 for half a beat
+    {G4, 1.5},  // E4 for one and a half beats
+    {-1, 0.5},    // for a quarter beat
+    {C5, 1},    // E4 for one beat
+    {D5, 1.5},  // D4 for one and a half beats
+    {C5, 1.5},  // E4 for one and a half beats
+    {A4, 1},    // Fs4 for one beat
+
+    //LINE 3
+    {G4, 3},    // E4 for three beats
+    {-1, 1},      // for a quarter beat
+
+    //REPEAT
+    //LINE 1
+    {F4, 0.5},  // B4 for half a beat
+    {G4, 0.5},  // B4 for half a beat
+    {A5, 1.5},  // B4 for half a beat
+    {G4, 0.5},  // A4 for half a beat
+    {F4, 1},    // Fs4 for half a beat
+    {C5, 0.5},  // Fs4 for half a beat
+    {F4, 0.5},  // E4 for half a beat
+    {G4, 2},    // E4 for two beats
+    {G4, 0.5},  // D4 for half a beat
+    {A4, 0.5},  // E4 for half a beat
+    {B4, 1.5},  // Fs4 for one and a half beats
+    {A4, 1.5},  // E4 for one and a half beats
+    {G4, 1},    // Fs4 for one beat
+
+    //LINE 2
+    {C4, 0.5},  // B4 for half a beat
+    {A4, 0.5},  // A4 for half a beat
+    {G4, 1.5},  // Fs4 for one and a half beats
+    {E4, 0.5},  // Fs4 for half a beat
+    {F4, 0.5},  // E4 for half a beat
+    {G4, 0.5},  // E4 for half a beat
+    {F4, 1.5},  // D4 for one and a half beats
+    {A4, 1.5},  // E4 for one and a half beats
+    {F4, 1},    // Fs4 for one beat
+    {G4, 0.5},  // E4 for half a beat
+    {A5, 0.5},  // Fs4 for half a beat
+    {G4, 1.5},  // E4 for one and a half beats
+    {-1, 0.5},    // for a quarter beat
+    {C5, 1},    // E4 for one beat
+    {D5, 1.5},  // D4 for one and a half beats
+    {C5, 1.5},  // E4 for one and a half beats
+    {A4, 1},    // Fs4 for one beat
+
+    //LINE 3
+    {G4, 3},    // E4 for three beats
+    {-1, 1},      // for a quarter beat
+
+
+    {Cs5, 0.5},  // Fs4 for half a beat  
+    {Cs5, 0.5},  // B4 for half a beat
+    {A4, 0.5},   // A4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {D4, 0.5},   // Fs4 for half a beat
+    {D4, 0.5},   // E4 for half a beat
+    {D4, 0.5},   // E4 for half a beat
+    {Cs4, 0.5},  // D4 for half a beat
+    {D4, 0.5},   // E4 for half a beat
+    {Fs4, 0.5},  // Fs4 for half a beat
+    {A4, 0.5},   // E4 for half a beat
+    {Cs5, 0.5},  // Fs4 for half a beat
+
+    //LINE 4
+    {-1, 2.5},    // for two and a half beats
+    {C4, 0.5},  // Fs4 for half a beat  
+    {D4, 0.5},  // B4 for half a beat
+    {E4, 0.5},  // A4 for half a beat
+};
+
+Song snakeSong {
+  149,
+  snakeNotes,
+  sizeof(snakeNotes) / sizeof(snakeNotes[0]),  // Length of the song
+  true
+};
+
+float shutdownNotes [][2] {
+  {Gs5, 0.67},  // B4 for half a beat
+    {Ds5, 0.67},  // B4 for half a beat
+    {Gs4, 0.67},  // B4 for half a beat
+    {As4, 2},  // A4 for half a beat
+};
+
+Song shutDownSong {
+  115,
+  shutdownNotes,
+  sizeof(shutdownNotes) / sizeof(shutdownNotes[0]),
+  false
+};
+
+float startNotes[][2] = {
+    {-1, 1},
+    {Ds6, 0.583},  // B4 for half a beat
+    {Ds5, 0.167},  // B4 for half a beat
+    {As5, 1},  // B4 for half a beat
+    {Gs5, 1.33},  // A4 for half a beat
+    {Ds6, 0.67},  // Fs4 for one beat
+    {As5, 2},  // E4 for half a beat 
+};
+
+// Create the song struct
+Song startupSong = {
+  115,  // BPM
+  startNotes,  // Pointer to the 2D array of notes
+  sizeof(startNotes) / sizeof(startNotes[0]),  // Calculate the length of the array
+  false
+};
+
+
+
+
+
 
 // Variables for song playback
 bool isSongPlaying = false;
@@ -548,6 +1453,21 @@ int beatDuration = 0;
 // =========================
 
 void setup() {
+
+    // Create the mutex
+  xSemaphore = xSemaphoreCreateMutex();
+
+  // Create the audio task
+  xTaskCreatePinnedToCore(
+      audioTask,    // Function to implement the task
+      "Audio Task", // Name of the task
+      2048,         // Stack size in words
+      NULL,         // Task input parameter
+      1,            // Priority of the task
+      NULL,         // Task handle
+      0             // Core where the task should run (0 or 1)
+  );
+
   // Initialize Serial for Debugging
   Serial.begin(115200);
   Serial.println("VGA Menu System with ESP-NOW Controller");
@@ -594,25 +1514,14 @@ void setup() {
   startupStartTime = millis();
   displayStartupScreen();
 
+  // Start the startup song
+  startSong(startupSong);
+
     // Set up the PWM channel
   ledcSetup(pwmChannel, 2000, resolution);  // Initialize with an arbitrary frequency (e.g., 2000 Hz)
 
   // Attach the PWM channel to the pin
   ledcAttachPin(pwmPin, pwmChannel);
-
-  // Create the mutex
-  xSemaphore = xSemaphoreCreateMutex();
-
-  // Create the audio task
-  xTaskCreatePinnedToCore(
-      audioTask,    // Function to implement the task
-      "Audio Task", // Name of the task
-      2048,         // Stack size in words
-      NULL,         // Task input parameter
-      1,            // Priority of the task
-      NULL,         // Task handle
-      0             // Core where the task should run (0 or 1)
-  );
 }
 
 // =========================
@@ -621,6 +1530,41 @@ void setup() {
 
 void loop() {
     unsigned long currentMillis = millis();  // Current time for debounce and timing
+
+    static AppState previousAppState = STARTUP;  // Initialize to STARTUP or an invalid state
+    // Check for appState change
+    if (appState != previousAppState) {
+        // State has changed
+        // Stop any playing song
+        stopSong();
+
+        // Start new song if needed
+        switch (appState) {
+            case STARTUP:
+                startSong(startupSong);
+                break;
+            case MENU_MAIN:
+                startSong(menuSong);
+                break;
+            case GAME_RUNNING:
+                // Start game-specific music
+                if (strcmp(selectedGame, "Flappy Bird") == 0) {
+                    startSong(flappyBirdSong);
+                } else if (strcmp(selectedGame, "Maze Hunter") == 0) {
+                    startSong(DoomSong);
+                } else if (strcmp(selectedGame, "Snake") == 0) {
+                    startSong(snakeSong);
+                }
+                // Add additional games and their songs as needed
+                break;
+            // Handle other states as needed
+            default:
+                // For other states, we might not play any song
+                break;
+        }
+
+        previousAppState = appState;
+    }
 
     switch(appState) {
         case STARTUP:
@@ -697,14 +1641,25 @@ void back(AppState state, unsigned long currentMillis) {
 
 
 // Add this function to generate player count menu items based on the selected game
+// Function to generate player count menu items based on the selected game
 std::vector<const char*> getPlayerCountMenuItems() {
   std::vector<const char*> items;
-  if (strcmp(selectedGame, "Doom") == 0) {
+  if (strcmp(selectedGame, "Maze Hunter") == 0) {
+    items.push_back("Two Player");
+  } else if (strcmp(selectedGame, "Pong") == 0) {
+    items.push_back("Single Player");
+    items.push_back("Two Player");
+  } else if (strcmp(selectedGame, "Snake") == 0) {
+    items.push_back("Single Player");
+    items.push_back("Leaderboard");
+  } else if (strcmp(selectedGame, "Flappy Bird") == 0) {
+    items.push_back("Single Player");
     items.push_back("Two Player");
     items.push_back("Leaderboard");
   }
   return items;
 }
+
 
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   if (len != sizeof(struct_message)) {
@@ -796,13 +1751,15 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
           // Reset Flappy Bird game
           resetFlappyBirdGame(currentPlayerCountItem == 0);
           fbNewHighScore = false;
+          bool isSinglePlayer = (currentPlayerCountItem == 0);
+          runFlappyBird(isSinglePlayer);
+          startSong(flappyBirdSong);  // Start the Flappy Bird song
         }
-        else if (strcmp(selectedGame, "Doom") == 0) {
+        else if (strcmp(selectedGame, "Maze Hunter") == 0) {
           if (currentPlayerCountItem == 0) { // Two-player mode selected
             twoPlayerMode = true;
             // Initialize 3D game variables
             generateRandomMaze();
-            initializeMonsters();
             resetPlayerPositions();   // Reset player positions
             gameState3D = GAME_PLAYING_3D;
             player1Health = 8;        // Reset health
@@ -856,11 +1813,15 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
         lastSelectInputTime = currentMillis; // Debounce select button
 
         // Perform action based on the selected menu item
-        if (strcmp(pauseMenuItems[currentPauseMenuItem], "Resume Game") == 0) {
-            appState = GAME_RUNNING; // Resume the game
-        } else if (strcmp(pauseMenuItems[currentPauseMenuItem], "Exit Game") == 0) {
+    if (strcmp(pauseMenuItems[currentPauseMenuItem], "Resume Game") == 0) {
+        appState = GAME_RUNNING; // Resume the game
+        previousButton3State1 = controllerData[1].button3;
+        previousButton3State2 = controllerData[2].button3;
+        // Reset debounce timers if necessary
+        lastButton3PressTime1 = millis();
+        lastButton3PressTime2 = millis();
+    } else if (strcmp(pauseMenuItems[currentPauseMenuItem], "Exit Game") == 0) {
             appState = MENU_MAIN; // Exit to main menu
-            stopSong();
             displayMenuMain();
         } else if (strcmp(pauseMenuItems[currentPauseMenuItem], "Volume Up") == 0) {
             adjustVolume(10); // Increase volume
@@ -1001,7 +1962,7 @@ void runSelectedGame() {
     bool isSinglePlayer = (currentPlayerCountItem == 0);
     runFlappyBird(isSinglePlayer);
   }
-  else if (strcmp(selectedGame, "Doom") == 0) {
+  else if (strcmp(selectedGame, "Maze Hunter") == 0) {
     if (currentPlayerCountItem == 0) { // Two-player mode selected
       twoPlayerMode = true;
       run3DGameTwoPlayer();
@@ -1012,111 +1973,107 @@ void runSelectedGame() {
 void checkPause() {
     unsigned long currentMillis = millis();
 
-    // Check if Button 3 on Player 1 is pressed to enter pause menu
-    if (controllerData[1].button3 == LOW) {
-        if (currentMillis - lastButton3PressTime1 >= debouncePause) {
-            appState = PAUSE_MENU;
-            lastButton3PressTime1 = currentMillis; // Update debounce time
-            return;
+    // Check if controllerData[1] exists
+    if (controllerData.find(1) != controllerData.end()) {
+        int currentButton3State1 = controllerData[1].button3;
+
+        // Check for transition from HIGH to LOW
+        if (previousButton3State1 == HIGH && currentButton3State1 == LOW) {
+            if (currentMillis - lastButton3PressTime1 >= debouncePause) {
+                appState = PAUSE_MENU;
+                lastButton3PressTime1 = currentMillis; // Update debounce time
+                // Update previous state after handling the event
+            }
         }
+        // Update previous state
+        previousButton3State1 = currentButton3State1;
     }
 
-    // Check if Button 3 on Player 2 is pressed to enter pause menu
-    if (controllerData.find(2) != controllerData.end()) { // Ensure Player 2 exists
-        if (controllerData[2].button3 == LOW) {
+    // Check if controllerData[2] exists
+    if (controllerData.find(2) != controllerData.end()) {
+        int currentButton3State2 = controllerData[2].button3;
+        // Check for transition from HIGH to LOW
+        if (previousButton3State2 == HIGH && currentButton3State2 == LOW) {
             if (currentMillis - lastButton3PressTime2 >= debouncePause) {
                 appState = PAUSE_MENU;
                 lastButton3PressTime2 = currentMillis; // Update debounce time
-                return;
+                // Update previous state after handling the event
+                Serial.println("triggered");
             }
         }
-    }
-
-    // Reset debounce times if buttons are released
-    if (controllerData[1].button3 != LOW) {
-        lastButton3PressTime1 = currentMillis;
-    }
-    if (controllerData.find(2) != controllerData.end()) { // Ensure Player 2 exists
-        if (controllerData[2].button3 != LOW) {
-            lastButton3PressTime2 = currentMillis;
-        }
+        // Update previous state
+        previousButton3State2 = currentButton3State2;
     }
 }
 
 // Pong Game Logic
 void runPong(bool isSinglePlayer) {
-  unsigned long currentMillis = millis();
-  checkPause();
-  if (gameState == GAME_OVER) {
-    displayWinMessage(playerScore >= maxScore ? "Player 1 Wins!" : isSinglePlayer ? "AI Wins!" : "Player 2 Wins!");
-    if (!newHighScore && playerScore >= maxScore) {
-      // Check for high score
-      updateLeaderboard("Pong", playerScore);
-      newHighScore = true;
-    }
-    if (controllerData[1].button2 == LOW) {  // Button press to return to menu
-      delay(200);
-      appState = MENU_MAIN;
-      displayMenuMain();
-    }
-    return;
-  }
-
-  if (serve) {
-    // Setup serve based on who serves
-    setupServe(isSinglePlayer);
-    return;
-  }
-
-  // Handle input for player 1 and player 2 or AI based on game mode
-  handlePlayerInputs(isSinglePlayer);
-
-  // Update collision cooldown
-  if (collisionOccurred && (currentMillis - collisionCooldown) > 50) {
-    collisionOccurred = false;
-  }
-
-  // Update the ball's position
-  if (currentMillis - previousMillis >= interval) {
-    previousMillis = currentMillis;
-
-    // Update ball position
-    ballX += ballSpeedX;
-    ballY += ballSpeedY;
-
-    // Check for collision with the top and bottom edges
-    if ((ballY - ballRadius) <= 0 || (ballY + ballRadius) >= gfx.height()) {
-      ballSpeedY = -ballSpeedY;
-      ballY += ballSpeedY;
+    unsigned long currentMillis = millis();
+    checkPause();
+    if (gameState == GAME_OVER) {
+        displayWinMessage(playerScore >= maxScore ? "Player 1 Wins!" : isSinglePlayer ? "AI Wins!" : "Player 2 Wins!");
+        if (controllerData[1].button2 == LOW) {  // Button press to return to menu
+            delay(200);
+            appState = MENU_MAIN;
+            displayMenuMain();
+        }
+        return;
     }
 
-    // Check paddle collisions
-    checkPaddleCollisions();
-
-    // Check for scoring
-    if (ballX - ballRadius <= 0) {
-      // Player 2 or AI scores
-      aiScore++;
-      checkWinCondition();
-      if (gameState != GAME_OVER) {
-        serve = true;
-        playerServe = false;
-        resetBall();
-      }
-    } else if (ballX + ballRadius >= gfx.width()) {
-      // Player 1 scores
-      playerScore++;
-      checkWinCondition();
-      if (gameState != GAME_OVER) {
-        serve = true;
-        playerServe = true;
-        resetBall();
-      }
+    if (serve) {
+        // Setup serve based on who serves
+        setupServe(isSinglePlayer);
+        return;
     }
 
-    // Draw the game
-    drawGame();
-  }
+    // Handle input for player 1 and player 2 or AI based on game mode
+    handlePlayerInputs(isSinglePlayer);
+
+    // Update the ball's position
+    if (currentMillis - previousMillis >= interval) {
+        previousMillis = currentMillis;
+
+        // Update ball's previous position
+        prevBallX = ballX;
+        prevBallY = ballY;
+
+        // Update ball position
+        ballX += ballSpeedX;
+        ballY += ballSpeedY;
+
+        // Check for collision with the top and bottom edges
+        if ((ballY - ballRadius) <= 0 || (ballY + ballRadius) >= gfx.height()) {
+            ballSpeedY = -ballSpeedY;
+            ballY += ballSpeedY;
+        }
+
+        // Check paddle collisions
+        checkPaddleCollisions();
+
+        // Check for scoring
+        if (ballX - ballRadius <= 0) {
+            // Player 2 or AI scores
+            aiScore++;
+            checkWinCondition();
+            if (gameState != GAME_OVER) {
+                serve = true;
+                playerServe = false;
+                resetBall();
+            }
+        } else if (ballX + ballRadius >= gfx.width()) {
+            // Player 1 scores
+            playerScore++;
+            checkWinCondition();
+            if (gameState != GAME_OVER) {
+                serve = true;
+                playerServe = true;
+                resetBall();
+            }
+        }
+
+        // Draw the game
+        drawGame(isSinglePlayer);
+    }
 }
 
 // Handle player inputs for both single-player and two-player mode
@@ -1132,24 +2089,27 @@ void handlePlayerInputs(bool isSinglePlayer) {
   }
 
   if (isSinglePlayer) {
-    // AI Logic
-    if (ballX > mode.hRes / 2 && !serve) {
-      if (ballY < aiPaddleY + paddleHeight / 2) {
-        aiPaddleY -= aiSpeed;
-      } else if (ballY > aiPaddleY + paddleHeight / 2) {
-        aiPaddleY += aiSpeed;
-      }
-    }
-    if (aiPaddleY < 0) aiPaddleY = 0; // Boundary check
-    if (aiPaddleY + paddleHeight > gfx.height()) aiPaddleY = gfx.height() - paddleHeight; // Boundary check
+      // AI Logic with Proportional Control
+      float targetY = ballY - paddleHeight / 2;
+      float deltaY = targetY - aiPaddleY;
+
+      // Limit the AI paddle's speed
+      if (deltaY > aiSpeed) deltaY = aiSpeed;
+      if (deltaY < -aiSpeed) deltaY = -aiSpeed;
+
+      aiPaddleY += deltaY;
+
+      // Boundary checks
+      if (aiPaddleY < 0) aiPaddleY = 0;
+      if (aiPaddleY + paddleHeight > gfx.height()) aiPaddleY = gfx.height() - paddleHeight;
   } else {
     // Controller 2: Player 2 Paddle
     if (controllerMap.size() >= 2) {
-      if (controllerData[2].button1 == -1) {
+      if ((controllerData[2].button1 == -1) && controllerData.find(2) != controllerData.end()) {
         aiPaddleY -= playerSpeed;
         if (aiPaddleY < 0) aiPaddleY = 0;
       }
-      if (controllerData[2].button1 == 1) {
+      if ((controllerData[2].button1 == 1) && controllerData.find(2) != controllerData.end()) {
         aiPaddleY += playerSpeed;
         if (aiPaddleY + paddleHeight > gfx.height()) aiPaddleY = gfx.height() - paddleHeight;
       }
@@ -1159,64 +2119,79 @@ void handlePlayerInputs(bool isSinglePlayer) {
 
 // Function to setup serve
 void setupServe(bool isSinglePlayer) {
-  static bool screenDrawn = false; // Add a static flag
-
-  if (!screenDrawn) {
-    // Draw the serve screen once
+    // Always draw the serve screen
     gfx.fillScreen(blackColor);
     drawCenterLine();
-    displayScores();
+    displayScores(isSinglePlayer);
+
     // Draw paddles
     gfx.fillRect(playerPaddleX, playerPaddleY, paddleWidth, paddleHeight, paddleColor);
     gfx.fillRect(aiPaddleX, aiPaddleY, paddleWidth, paddleHeight, paddleColor);
+
     // Draw ball
     gfx.fillCircle(ballX, ballY, ballRadius, ballColor);
+
     // Display "Press Select to Serve"
     gfx.setTextColor(whiteColor);
     gfx.setTextSize(1);
-    gfx.setCursor(screenWidth / 2 - 50, screenHeight / 2 - 10);
+    int textWidth = calculateTextWidth("Press Select to Serve", 1);
+    gfx.setCursor((screenWidth - textWidth) / 2, screenHeight / 2 - 10);
     gfx.println("Press Select to Serve");
-    vga.show();
-    screenDrawn = true; // Set the flag
-  }
 
-  // Wait for player input to start the serve
-  if (controllerData[1].button2 == LOW) { // Use button2 instead of data.d
-    serve = false;
-    screenDrawn = false;
-    float angle = (random(-30, 30)) * PI / 180.0;
-    ballSpeedY = ballSpeed * sin(angle);
-    ballSpeedX = playerServe ? ballSpeed * cos(angle) : -ballSpeed * cos(angle);
-  }
+    // Wait for player input to start the serve
+    if (controllerData[1].button2 == LOW) {
+        serve = false;
+        float angle = (random(-30, 30)) * PI / 180.0;
+        ballSpeedY = ballSpeed * sin(angle);
+        ballSpeedX = playerServe ? ballSpeed * cos(angle) : -ballSpeed * cos(angle);
+    }
 }
+
 
 // Check for paddle collisions
 void checkPaddleCollisions() {
-  if (!collisionOccurred) {
-    // Collision with AI paddle
-    if ((ballX + ballRadius >= aiPaddleX) && (ballX + ballRadius <= aiPaddleX + paddleWidth) && (ballY >= aiPaddleY) && (ballY <= aiPaddleY + paddleHeight)) {
-      handlePaddleCollision(aiPaddleX, aiPaddleY, false);
-      collisionOccurred = true;
-      collisionCooldown = millis();
+    // AI Paddle Rectangle
+    paddleLeft = aiPaddleX;
+    paddleRight = aiPaddleX + paddleWidth;
+    paddleTop = aiPaddleY;
+    paddleBottom = aiPaddleY + paddleHeight;
+
+    // Check for collision with AI paddle
+    if (lineIntersectsRect(prevBallX, prevBallY, ballX, ballY, paddleLeft, paddleTop, paddleRight, paddleBottom)) {
+        // Handle collision
+        handlePaddleCollision(aiPaddleX, aiPaddleY, false);
+        collisionOccurred = true;
+        collisionCooldown = millis();
     }
 
-    // Collision with Player paddle
-    if ((ballX - ballRadius <= playerPaddleX + paddleWidth) && (ballX - ballRadius >= playerPaddleX) && (ballY >= playerPaddleY) && (ballY <= playerPaddleY + paddleHeight)) {
-      handlePaddleCollision(playerPaddleX, playerPaddleY, true);
-      collisionOccurred = true;
-      collisionCooldown = millis();
+
+    // Define the line segment of the ball's movement
+    ballDeltaX = ballX - prevBallX;
+    ballDeltaY = ballY - prevBallY;
+
+    // Player Paddle Rectangle
+    paddleLeft = playerPaddleX;
+    paddleRight = playerPaddleX + paddleWidth;
+    paddleTop = playerPaddleY;
+    paddleBottom = playerPaddleY + paddleHeight;
+
+    // Check for collision with player paddle
+    if (lineIntersectsRect(prevBallX, prevBallY, ballX, ballY, paddleLeft, paddleTop, paddleRight, paddleBottom)) {
+        // Handle collision
+        handlePaddleCollision(playerPaddleX, playerPaddleY, true);
+        collisionOccurred = true;
+        collisionCooldown = millis();
     }
   }
-}
 
 // Draw the game elements
-void drawGame() {
+void drawGame(bool isSinglePlayer) {
   // Clear the previous frame
   gfx.fillScreen(blackColor);
 
   // Draw center line and scores
   drawCenterLine();
-  displayScores();
+  displayScores(isSinglePlayer);
 
   // Draw the ball at the updated position
   gfx.fillCircle(ballX, ballY, ballRadius, ballColor);
@@ -1273,7 +2248,7 @@ void drawCenterLine() {
 }
 
 // Function to Display Scores
-void displayScores() {
+void displayScores(bool isSinglePlayer) {
   gfx.setTextSize(1);
   gfx.setTextColor(whiteColor);
 
@@ -1284,7 +2259,7 @@ void displayScores() {
 
   // AI or Player 2 Score
   gfx.setCursor(mode.hRes / 2 + 10, 10);
-  if (controllerMap.size() >= 2 && currentPlayerCountItem == 1) {
+  if (!isSinglePlayer) {
     gfx.print("P2: ");
   } else {
     gfx.print("AI: ");
@@ -1328,7 +2303,6 @@ void displayWinMessage(const char* winner) {
 // =========================
 // Game Variables (Snake)
 // =========================
-
 // Snake properties
 struct SnakeSegment {
   int x;
@@ -1356,11 +2330,13 @@ const int gridSize = 10; // Each grid cell is 10x10 pixels
 uint16_t snakeColor = 0x07E0; // Green
 uint16_t foodColor = 0xF800;  // Red
 
+
 // =========================
 // Snake Game Functions
 // =========================
 
 void runSnake(bool isSinglePlayer) {
+  playSong(snakeSong);
   unsigned long currentMillis = millis();
   checkPause();
 
@@ -1406,13 +2382,19 @@ void runSnake(bool isSinglePlayer) {
     return;
   }
 
+  // Always handle input to update direction
+  handleSnakeInput();
+
+  // Update game logic at intervals
   if (currentMillis - lastMoveTime >= snakeSpeed) {
     lastMoveTime = currentMillis;
-    handleSnakeInput();
     updateSnake();
     checkSnakeCollision();
-    drawSnakeGame();
   }
+
+  // Always draw the game every frame
+  drawSnakeGame();
+
 }
 
 void resetSnakeGame(bool isSinglePlayer) {
@@ -1473,17 +2455,10 @@ void updateSnake() {
     if (newHead.x == foodX && newHead.y == foodY) {
         snakeScore++;
         generateFood();
-        // Draw new food
-        gfx.fillRect(foodX, foodY, gridSize, gridSize, foodColor);
     } else {
-        // Remove and erase tail
-        SnakeSegment tail = snake.back();
-        gfx.fillRect(tail.x, tail.y, gridSize, gridSize, blackColor); // Erase tail
+        // Remove tail
         snake.pop_back();
     }
-
-    // Draw new head
-    gfx.fillRect(newHead.x, newHead.y, gridSize, gridSize, snakeColor);
 }
 
 void checkSnakeCollision() {
@@ -1505,6 +2480,17 @@ void checkSnakeCollision() {
 }
 
 void drawSnakeGame() {
+    // Clear the play area
+    gfx.fillRect(0, 20, screenWidth, screenHeight - 20, blackColor); // Clear play area
+
+    // Draw the entire snake
+    for (const auto& segment : snake) {
+        gfx.fillRect(segment.x, segment.y, gridSize, gridSize, snakeColor);
+    }
+
+    // Draw food
+    gfx.fillRect(foodX, foodY, gridSize, gridSize, foodColor);
+
     // Draw score (update as needed)
     gfx.fillRect(0, 0, screenWidth, 20, blackColor); // Clear score area
     gfx.setTextColor(whiteColor);
@@ -1512,6 +2498,7 @@ void drawSnakeGame() {
     gfx.print("Score: ");
     gfx.print(snakeScore);
 }
+
 
 void generateFood() {
   foodX = random(screenWidth / gridSize) * gridSize;
@@ -1677,8 +2664,10 @@ void runFlappyBirdTwoPlayer() {
     fbBirdSpeedY1 = fbJumpStrength;
   }
   // Process input for Player 2
-  if (fbPlayer2Alive && controllerData[2].button2 == LOW) {
-    fbBirdSpeedY2 = fbJumpStrength;
+  if (controllerData.find(2) != controllerData.end()) {
+    if (fbPlayer2Alive && controllerData[2].button2 == LOW) {
+      fbBirdSpeedY2 = fbJumpStrength;
+    }
   }
 
   // Update bird positions
@@ -1731,7 +2720,7 @@ void runFlappyBirdTwoPlayer() {
     gfx.setTextSize(1);
     gfx.setCursor(fbScreenWidth / 2 - 80, fbScreenHeight / 2 + 10);
     gfx.print("Press Select to return");
-    if (controllerData[1].button2 == LOW || controllerData[2].button2 == LOW) {
+    if (controllerData[1].button2 == LOW || (controllerData[2].button2 == LOW && controllerData.find(2) != controllerData.end())) {
       appState = MENU_MAIN;
       displayMenuMain();
       fbGameInitialized = false;
@@ -2440,9 +3429,8 @@ void run3DGameTwoPlayer() {
   checkPause();
 
   if (gameState3D == GAME_OVER_3D) {
-    stopSong();  // Stop the song when the game is over
     display3DGameOverScreen();
-    if ((controllerData[1].button2 == LOW) || (controllerData[2].button2 == LOW)) {  // Use Select button to return to menu
+    if ((controllerData[1].button2 == LOW) || ((controllerData[2].button2 == LOW) && controllerData.find(2) != controllerData.end())) {  // Use Select button to return to menu
       delay(200);
       appState = MENU_MAIN;
       displayMenuMain();
@@ -2514,79 +3502,81 @@ void resetPlayerPositions() {
 
 // Function to handle inputs for Player 2
 void handle3DGameInputsPlayer2() {
-  float moveSpeed = 0.05f; // Movement speed
-  float rotSpeed = 0.1f;  // Rotation speed
+  if (controllerData.find(2) != controllerData.end()) {
+    float moveSpeed = 0.05f; // Movement speed
+    float rotSpeed = 0.1f;  // Rotation speed
 
-  // Movement Forward/Backward for Player 2
-  if (controllerData[2].command1 & COMMAND_UP) { // Move forward
-    float newPosX = posX2 + dirX2 * moveSpeed;
-    float newPosY = posY2 + dirY2 * moveSpeed;
-    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
-      posX2 = newPosX;
-      posY2 = newPosY;
-    }
-  }
-  if (controllerData[2].command1 & COMMAND_DOWN) { // Move backward
-    float newPosX = posX2 - dirX2 * moveSpeed;
-    float newPosY = posY2 - dirY2 * moveSpeed;
-    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
-      posX2 = newPosX;
-      posY2 = newPosY;
-    }
-  }
-
-  // Strafing Left/Right for Player 2
-  if (controllerData[2].command1 & COMMAND_LEFT) { // Strafe left
-    float newPosX = posX2 - dirY2 * moveSpeed;
-    float newPosY = posY2 + dirX2 * moveSpeed;
-    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
-      posX2 = newPosX;
-      posY2 = newPosY;
-    }
-  }
-  if (controllerData[2].command1 & COMMAND_RIGHT) { // Strafe right
-    float newPosX = posX2 + dirY2 * moveSpeed;
-    float newPosY = posY2 - dirX2 * moveSpeed;
-    if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
-      posX2 = newPosX;
-      posY2 = newPosY;
-    }
-  }
-
-  // Rotation with command2
-  if (controllerData[2].command2 & COMMAND_LEFT) { // Rotate left
-    float oldDirX = dirX2;
-    dirX2 = dirX2 * cos(rotSpeed) - dirY2 * sin(rotSpeed);
-    dirY2 = oldDirX * sin(rotSpeed) + dirY2 * cos(rotSpeed);
-    float oldPlaneX = planeX2;
-    planeX2 = planeX2 * cos(rotSpeed) - planeY2 * sin(rotSpeed);
-    planeY2 = oldPlaneX * sin(rotSpeed) + planeY2 * cos(rotSpeed);
-  }
-  if (controllerData[2].command2 & COMMAND_RIGHT) { // Rotate right
-    float oldDirX = dirX2;
-    dirX2 = dirX2 * cos(-rotSpeed) - dirY2 * sin(-rotSpeed);
-    dirY2 = oldDirX * sin(-rotSpeed) + dirY2 * cos(-rotSpeed);
-    float oldPlaneX = planeX2;
-    planeX2 = planeX2 * cos(-rotSpeed) - planeY2 * sin(-rotSpeed);
-    planeY2 = oldPlaneX * sin(-rotSpeed) + planeY2 * cos(-rotSpeed);
-  }
-
-  // Shooting logic for Player 2
-  static unsigned long lastShootTimeP2 = 0;
-  unsigned long currentMillis = millis();
-  if ((controllerData[2].button2 == LOW) && (currentMillis - lastShootTimeP2 >= shootCooldown)) { // Player 2 shooting
-      for (int i = 0; i < maxBullets; i++) {
-          if (!bullets[i].active) {
-              bullets[i].x = posX2;
-              bullets[i].y = posY2;
-              bullets[i].dirX = dirX2;
-              bullets[i].dirY = dirY2;
-              bullets[i].active = true;
-              bullets[i].shooter = 2;  // Assign Player 2 as the shooter
-              lastShootTimeP2 = currentMillis; // Update last shoot time
-              break;
-          }
+    // Movement Forward/Backward for Player 2
+    if (controllerData[2].command1 & COMMAND_UP) { // Move forward
+      float newPosX = posX2 + dirX2 * moveSpeed;
+      float newPosY = posY2 + dirY2 * moveSpeed;
+      if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
+        posX2 = newPosX;
+        posY2 = newPosY;
       }
+    }
+    if (controllerData[2].command1 & COMMAND_DOWN) { // Move backward
+      float newPosX = posX2 - dirX2 * moveSpeed;
+      float newPosY = posY2 - dirY2 * moveSpeed;
+      if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
+        posX2 = newPosX;
+        posY2 = newPosY;
+      }
+    }
+
+    // Strafing Left/Right for Player 2
+    if (controllerData[2].command1 & COMMAND_LEFT) { // Strafe left
+      float newPosX = posX2 - dirY2 * moveSpeed;
+      float newPosY = posY2 + dirX2 * moveSpeed;
+      if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
+        posX2 = newPosX;
+        posY2 = newPosY;
+      }
+    }
+    if (controllerData[2].command1 & COMMAND_RIGHT) { // Strafe right
+      float newPosX = posX2 + dirY2 * moveSpeed;
+      float newPosY = posY2 - dirX2 * moveSpeed;
+      if (worldMap3D[int(newPosY) * mapWidth3D + int(newPosX)] == '.') {
+        posX2 = newPosX;
+        posY2 = newPosY;
+      }
+    }
+
+    // Rotation with command2
+    if (controllerData[2].command2 & COMMAND_LEFT) { // Rotate left
+      float oldDirX = dirX2;
+      dirX2 = dirX2 * cos(rotSpeed) - dirY2 * sin(rotSpeed);
+      dirY2 = oldDirX * sin(rotSpeed) + dirY2 * cos(rotSpeed);
+      float oldPlaneX = planeX2;
+      planeX2 = planeX2 * cos(rotSpeed) - planeY2 * sin(rotSpeed);
+      planeY2 = oldPlaneX * sin(rotSpeed) + planeY2 * cos(rotSpeed);
+    }
+    if (controllerData[2].command2 & COMMAND_RIGHT) { // Rotate right
+      float oldDirX = dirX2;
+      dirX2 = dirX2 * cos(-rotSpeed) - dirY2 * sin(-rotSpeed);
+      dirY2 = oldDirX * sin(-rotSpeed) + dirY2 * cos(-rotSpeed);
+      float oldPlaneX = planeX2;
+      planeX2 = planeX2 * cos(-rotSpeed) - planeY2 * sin(-rotSpeed);
+      planeY2 = oldPlaneX * sin(-rotSpeed) + planeY2 * cos(-rotSpeed);
+    }
+
+    // Shooting logic for Player 2
+    static unsigned long lastShootTimeP2 = 0;
+    unsigned long currentMillis = millis();
+    if ((controllerData[2].button2 == LOW) && (currentMillis - lastShootTimeP2 >= shootCooldown)) { // Player 2 shooting
+        for (int i = 0; i < maxBullets; i++) {
+            if (!bullets[i].active) {
+                bullets[i].x = posX2;
+                bullets[i].y = posY2;
+                bullets[i].dirX = dirX2;
+                bullets[i].dirY = dirY2;
+                bullets[i].active = true;
+                bullets[i].shooter = 2;  // Assign Player 2 as the shooter
+                lastShootTimeP2 = currentMillis; // Update last shoot time
+                break;
+            }
+        }
+    }
   }
 }
 
@@ -2616,80 +3606,6 @@ void display3DGameOverScreen() {
   player2Health = 8;
   player1Lives = 3;
   player2Lives = 3;
-}
-
-// Function to Initialize Monsters
-void initializeMonsters() {
-  // Clear all monsters
-  for (int i = 0; i < maxMonsters; i++) {
-    monsters[i].alive = false;
-  }
-
-  // Example positions for monsters
-  monsters[0] = { 10.5f, 7.5f, true };
-  monsters[1] = { 12.5f, 5.5f, true };
-  monsters[2] = { 7.5f, 12.5f, true };
-  // Add more monsters as needed
-}
-
-// Function to Update Bullets
-void updateBullets() {
-    float bulletSpeed = 0.2f;
-    for (int i = 0; i < maxBullets; i++) {
-        if (bullets[i].active) {
-            bullets[i].x += bullets[i].dirX * bulletSpeed;
-            bullets[i].y += bullets[i].dirY * bulletSpeed;
-
-            // Check if bullet hits a wall
-            if (worldMap3D[int(bullets[i].y) * mapWidth3D + int(bullets[i].x)] == '#') {
-                bullets[i].active = false;
-            }
-
-            // Check bullet collision with Player 1
-            if (bullets[i].shooter == 2) {  // Only check if Player 2 shot the bullet
-                float distanceToPlayer1 = sqrt(pow(bullets[i].x - posX, 2) + pow(bullets[i].y - posY, 2));
-                if (distanceToPlayer1 < 0.5f && bullets[i].active) {
-                    bullets[i].active = false;
-                    player1Health--;
-                    if (player1Health <= 0) {
-                        player1Lives--;
-                        if (player1Lives <= 0) gameState3D = GAME_OVER_3D;  // Player 1 loses
-                        player1Health = 8;  // Reset health
-                    }
-                }
-            }
-
-            // Check bullet collision with Player 2
-            if (bullets[i].shooter == 1) {  // Only check if Player 1 shot the bullet
-                float distanceToPlayer2 = sqrt(pow(bullets[i].x - posX2, 2) + pow(bullets[i].y - posY2, 2));
-                if (distanceToPlayer2 < 0.5f && bullets[i].active) {
-                    bullets[i].active = false;
-                    player2Health--;
-                    if (player2Health <= 0) {
-                        player2Lives--;
-                        if (player2Lives <= 0) gameState3D = GAME_OVER_3D;  // Player 2 loses
-                        player2Health = 8;  // Reset health
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-// Function to Check Collision with Monsters
-bool checkCollisionWithMonsters(float x, float y) {
-  for (int i = 0; i < maxMonsters; i++) {
-    if (monsters[i].alive) {
-      float dx = x - monsters[i].x;
-      float dy = y - monsters[i].y;
-      float distance = sqrt(dx * dx + dy * dy);
-      if (distance < 0.5f) { // Collision threshold
-        return true; // Collision detected
-      }
-    }
-  }
-  return false; // No collision
 }
 
 // Function to Render Bullets
@@ -2842,85 +3758,96 @@ void updateLeaderboard(const char* gameName, int score) {
 }
 
 void enterPlayerName(char* playerName) {
-  // Simple keyboard input simulation
-  static int charIndex = 0;
-  static char inputName[4] = {'_', '_', '_', '\0'};
-  static bool nameEntered = false;
+    // Simple keyboard input simulation
+    static int charIndex = 0;
+    static char inputName[4] = {'_', '_', '_', '\0'};
+    static bool nameEntered = false;
 
-  gfx.fillScreen(blackColor);
-  gfx.setTextColor(whiteColor);
-  gfx.setTextSize(2);
-  gfx.setCursor(10, 20);
-  gfx.print("Enter Your Name:");
+    // Static variables to store previous button states
+    static int previousButton1State = HIGH;
+    static int previousButton2State = HIGH;
+    static int previousButton3State = HIGH;
 
-  gfx.setTextSize(3);
-  gfx.setCursor(screenWidth / 2 - 30, screenHeight / 2 - 20);
-  gfx.print(inputName);
+    unsigned long currentMillis = millis();
 
-  gfx.setTextSize(1);
-  gfx.setCursor(10, screenHeight - 20);
-  gfx.print("Use Left/Right to change");
-  gfx.setCursor(10, screenHeight - 10);
-  gfx.print("Select to confirm");
+    gfx.fillScreen(blackColor);
+    gfx.setTextColor(whiteColor);
+    gfx.setTextSize(2);
+    gfx.setCursor(10, 20);
+    gfx.print("Enter Your Name:");
 
-  unsigned long currentMillis = millis();  // Declare currentMillis
+    gfx.setTextSize(3);
+    gfx.setCursor(screenWidth / 2 - 30, screenHeight / 2 - 20);
+    gfx.print(inputName);
 
-  // Handle character decrement (Button 1)
-  if (controllerData[1].button1 == LOW) {
-    if (currentMillis - lastButton1PressTime >= debounceDelay) {
-      if (inputName[charIndex] == '_') {
-        inputName[charIndex] = 'Z';
-      } else if (inputName[charIndex] == 'A') {
-        inputName[charIndex] = '_';
-      } else {
-        inputName[charIndex]--;
-      }
-      lastButton1PressTime = currentMillis;
+    gfx.setTextSize(1);
+    gfx.setCursor(10, screenHeight - 20);
+    gfx.print("Use Buttons to change");
+    gfx.setCursor(10, screenHeight - 10);
+    gfx.print("Select to confirm");
+
+    // Get current button states
+    int currentButton1State = controllerData[1].button1;
+    int currentButton2State = controllerData[1].button2;
+    int currentButton3State = controllerData[1].button3;
+
+    // Handle character decrement (Button 1)
+    if (currentButton1State == LOW && previousButton1State == HIGH && (currentMillis - lastButton1PressTime >= debounceDelay)) {
+        // Button 1 was just pressed
+        if (inputName[charIndex] == '_') {
+            inputName[charIndex] = 'Z';
+        } else if (inputName[charIndex] == 'A') {
+            inputName[charIndex] = '_';
+        } else {
+            inputName[charIndex]--;
+        }
+        lastButton1PressTime = currentMillis;
     }
-  } else {
-    lastButton1PressTime = currentMillis;
-  }
 
-  // Handle character increment (Button 3)
-  if (controllerData[1].button3 == LOW) {
-    if (currentMillis - lastButton3PressTime >= debounceDelay) {
-      if (inputName[charIndex] == '_') {
-        inputName[charIndex] = 'A';
-      } else if (inputName[charIndex] == 'Z') {
-        inputName[charIndex] = '_';
-      } else {
-        inputName[charIndex]++;
-      }
-      lastButton3PressTime = currentMillis;
+    // Handle character increment (Button 3)
+    if (currentButton3State == LOW && previousButton3State == HIGH && (currentMillis - lastButton3PressTime >= debounceDelay)) {
+        // Button 3 was just pressed
+        if (inputName[charIndex] == '_') {
+            inputName[charIndex] = 'A';
+        } else if (inputName[charIndex] == 'Z') {
+            inputName[charIndex] = '_';
+        } else {
+            inputName[charIndex]++;
+        }
+        lastButton3PressTime = currentMillis;
     }
-  } else {
-    lastButton3PressTime = currentMillis;
-  }
 
-  // Handle moving to next character (Button 2)
-  if (controllerData[1].button2 == LOW) {
-    if (currentMillis - lastButton2PressTime >= debounceDelay) {
-      if (charIndex < 2) {
-        charIndex++;
-      } else {
-        // Name entry complete
-        strcpy(playerName, inputName);
-        nameEntered = true;
-        charIndex = 0;
-        memset(inputName, '_', 3);
-      }
-      lastButton2PressTime = currentMillis;
+    // Handle moving to next character (Button 2)
+    if (currentButton2State == LOW && previousButton2State == HIGH && (currentMillis - lastButton2PressTime >= debounceDelay)) {
+        // Button 2 was just pressed
+        if (charIndex < 2) {
+            charIndex++;
+        } else {
+            // Name entry complete
+            strcpy(playerName, inputName);
+            nameEntered = true;
+            charIndex = 0;
+            memset(inputName, '_', 3);
+        }
+        lastButton2PressTime = currentMillis;
     }
-  } else {
-    lastButton2PressTime = currentMillis;
-  }
 
-  if (nameEntered) {
-    // Validate and save name
-    saveHighScore(selectedGame, playerName);
-    nameEntered = false;
-    appState = MENU_MAIN;
-  }
+    // Update previous button states
+    previousButton1State = currentButton1State;
+    previousButton2State = currentButton2State;
+    previousButton3State = currentButton3State;
+
+    if (nameEntered) {
+        // Validate and save name
+        saveHighScore(selectedGame, playerName);
+        nameEntered = false;
+        appState = MENU_MAIN;
+        // Reset game variables as needed
+        snakeGameInitialized = false;
+        snakeGameOver = false;
+        snakeScore = 0;
+        newSnakeHighScore = false;
+    }
 }
 
 void saveHighScore(const char* gameName, const char* playerName) {
@@ -2932,7 +3859,7 @@ void saveHighScore(const char* gameName, const char* playerName) {
     filename += "snakeLeaderboard.txt";
   } else if (strcmp(gameName, "Flappy Bird") == 0) {
     filename += "flappyBirdLeaderboard.txt";
-  } else if (strcmp(gameName, "Doom") == 0) {
+  } else if (strcmp(gameName, "Maze Hunter") == 0) {
     filename += "doomLeaderboard.txt";
   } else {
     filename += "leaderboard.txt"; // Default filename
@@ -3006,11 +3933,21 @@ void saveHighScore(const char* gameName, const char* playerName) {
 void startSong(Song &song) {
     if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
         isSongPlaying = true;
+        songFinished = false;         // Reset the song finished flag
         noteStartTime = millis();
         currentNoteIndex = 0;
         beatDuration = calculateBeatDuration(song.bpm);
-        ledcWriteTone(pwmChannel, song.notes[0][0]);  // Start with the first note
-        ledcWrite(pwmChannel, volumeLevel); // Set initial volume
+        currentSong = song;            // Set the current song
+
+        // Play the first note or handle rest
+        int noteFrequency = song.notes[0][0];
+        if (noteFrequency == -1) {
+            ledcWriteTone(pwmChannel, 0);  // Mute audio
+        } else {
+            ledcWriteTone(pwmChannel, noteFrequency);
+            ledcWrite(pwmChannel, volumeLevel); // Set initial volume
+        }
+
         xSemaphoreGive(xSemaphore);
     }
 }
@@ -3025,43 +3962,49 @@ void stopSong() {
 }
 
 // Function to play the song (non-blocking)
-// Modify playSong() if necessary to ensure it is thread-safe and non-blocking
 void playSong(Song &song) {
     if (xSemaphoreTake(xSemaphore, portMAX_DELAY) == pdTRUE) {
-          if (!isSongPlaying) {
-              xSemaphoreGive(xSemaphore);
-              vTaskDelay(10);
-              return;
-          }
-      if (!isSongPlaying) {
-          vTaskDelay(10); // Sleep for a while if no song is playing
-          return;
-      }
+        if (!isSongPlaying) {
+            xSemaphoreGive(xSemaphore);
+            vTaskDelay(10);
+            return;
+        }
 
-      unsigned long currentTime = millis();
-      float durationInBeats = song.notes[currentNoteIndex][1];
-      unsigned long noteDuration = beatDuration * durationInBeats;
+        unsigned long currentTime = millis();
+        float durationInBeats = song.notes[currentNoteIndex][1];
+        unsigned long noteDuration = beatDuration * durationInBeats;
 
-      if (currentTime - noteStartTime >= noteDuration) {
-          // Move to the next note
-          currentNoteIndex++;
-          if (currentNoteIndex >= song.length) {
-              // Restart the song or stop it
-              currentNoteIndex = 0;  // Loop the song
-              // Alternatively, you can stop the song:
-              // stopSong();
-              // return;
-          }
+        if (currentTime - noteStartTime >= noteDuration) {
+            // Move to the next note
+            currentNoteIndex++;
+            if (currentNoteIndex >= song.length) {
+                if (song.loop) {
+                    currentNoteIndex = 0;  // Restart the song
+                } else {
+                    isSongPlaying = false; // Stop playing
+                    songFinished = true;   // Indicate the song has finished
+                    ledcWriteTone(pwmChannel, 0); // Mute audio
+                    xSemaphoreGive(xSemaphore);
+                    return;
+                }
+            }
 
-          // Play the next note
-          int noteFrequency = song.notes[currentNoteIndex][0];
-          ledcWriteTone(pwmChannel, noteFrequency);
-          ledcWrite(pwmChannel, volumeLevel); // Set volume
-          noteStartTime = currentTime;
-      }
-      xSemaphoreGive(xSemaphore);
+            // Play the next note or handle rest
+            int noteFrequency = song.notes[currentNoteIndex][0];
+            if (noteFrequency == -1) {
+                // It's a rest, stop the tone for the rest duration
+                ledcWriteTone(pwmChannel, 0); // Mute audio
+            } else {
+                // It's a note, play the note
+                ledcWriteTone(pwmChannel, noteFrequency);
+                ledcWrite(pwmChannel, volumeLevel); // Set volume
+            }
+
+            noteStartTime = currentTime;
+        }
+        xSemaphoreGive(xSemaphore);
     }
-  vTaskDelay(1); // Yield to other tasks
+    vTaskDelay(1); // Yield to other tasks
 }
 
 // Function to calculate the duration of a beat in milliseconds based on BPM
@@ -3105,7 +4048,7 @@ void displayPauseMenu() {
 
 void audioTask(void *parameter) {
     while (1) {
-        playSong(DoomSong); // Replace with the song you're playing
+        playSong(currentSong); // Replace with the song you're playing
         vTaskDelay(1); // Yield to other tasks
     }
 }
@@ -3120,8 +4063,74 @@ void adjustVolume(int change) {
     }
 }
 
+bool lineIntersectsRect(float x1, float y1, float x2, float y2, float rectLeft, float rectTop, float rectRight, float rectBottom) {
+    // Check if either end is inside the rectangle
+    if ((x1 >= rectLeft && x1 <= rectRight && y1 >= rectTop && y1 <= rectBottom) ||
+        (x2 >= rectLeft && x2 <= rectRight && y2 >= rectTop && y2 <= rectBottom)) {
+        return true;
+    }
 
+    // Check for intersection with each side of the rectangle
+    if (lineIntersectsLine(x1, y1, x2, y2, rectLeft, rectTop, rectRight, rectTop)) return true;    // Top
+    if (lineIntersectsLine(x1, y1, x2, y2, rectLeft, rectBottom, rectRight, rectBottom)) return true; // Bottom
+    if (lineIntersectsLine(x1, y1, x2, y2, rectLeft, rectTop, rectLeft, rectBottom)) return true;   // Left
+    if (lineIntersectsLine(x1, y1, x2, y2, rectRight, rectTop, rectRight, rectBottom)) return true;  // Right
 
+    return false;
+}
+
+bool lineIntersectsLine(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4) {
+    float denom = (y4 - y3)*(x2 - x1) - (x4 - x3)*(y2 - y1);
+    if (denom == 0.0f) return false; // Lines are parallel
+
+    float ua = ((x4 - x3)*(y1 - y3) - (y4 - y3)*(x1 - x3)) / denom;
+    float ub = ((x2 - x1)*(y1 - y3) - (y2 - y1)*(x1 - x3)) / denom;
+
+    return (ua >= 0.0f && ua <= 1.0f && ub >= 0.0f && ub <= 1.0f);
+}
+
+void updateBullets() {
+    float bulletSpeed = 0.2f;
+    for (int i = 0; i < maxBullets; i++) {
+        if (bullets[i].active) {
+            bullets[i].x += bullets[i].dirX * bulletSpeed;
+            bullets[i].y += bullets[i].dirY * bulletSpeed;
+
+            // Check if bullet hits a wall
+            if (worldMap3D[int(bullets[i].y) * mapWidth3D + int(bullets[i].x)] == '#') {
+                bullets[i].active = false;
+            }
+
+            // Check bullet collision with Player 1
+            if (bullets[i].shooter == 2) {  // Only check if Player 2 shot the bullet
+                float distanceToPlayer1 = sqrt(pow(bullets[i].x - posX, 2) + pow(bullets[i].y - posY, 2));
+                if (distanceToPlayer1 < 0.5f && bullets[i].active) {
+                    bullets[i].active = false;
+                    player1Health--;
+                    if (player1Health <= 0) {
+                        player1Lives--;
+                        if (player1Lives <= 0) gameState3D = GAME_OVER_3D;  // Player 1 loses
+                        player1Health = 8;  // Reset health
+                    }
+                }
+            }
+
+            // Check bullet collision with Player 2
+            if (bullets[i].shooter == 1) {  // Only check if Player 1 shot the bullet
+                float distanceToPlayer2 = sqrt(pow(bullets[i].x - posX2, 2) + pow(bullets[i].y - posY2, 2));
+                if (distanceToPlayer2 < 0.5f && bullets[i].active) {
+                    bullets[i].active = false;
+                    player2Health--;
+                    if (player2Health <= 0) {
+                        player2Lives--;
+                        if (player2Lives <= 0) gameState3D = GAME_OVER_3D;  // Player 2 loses
+                        player2Health = 8;  // Reset health
+                    }
+                }
+            }
+        }
+    }
+}
 
 // =========================
 // Utility Functions
