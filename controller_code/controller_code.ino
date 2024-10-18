@@ -6,7 +6,7 @@
 
 // REPLACE WITH YOUR RECEIVER MAC Address (Game Console MAC)
 // uint8_t broadcastAddress[] = {0x30, 0x30, 0xF9, 0x59, 0xCB, 0xDC};
-uint8_t broadcastAddress[] = {0x30, 0x30, 0xF9, 0x59, 0x41, 0xF0};
+uint8_t broadcastAddress[] = {0x30, 0x30, 0xF9, 0x59, 0xDF, 0x68};
 
 // Structure to send data to the game console
 typedef struct struct_message {
@@ -269,43 +269,66 @@ void loop() {
 
   //////////////////////////////////////////////// JOYSTICK /////////////////////////////////////////////////////////////////////////////
 
-// Swap X and Y readings and invert them
-xValue1 = 4095 - analogRead(joystickYPin1);  // Swapped and inverted for joystick 1
-yValue1 = 4095 - analogRead(joystickXPin1);  // Swapped and inverted for joystick 1
-xValue2 = 4095 - analogRead(joystickYPin2);  // Swapped and inverted for joystick 2
-yValue2 = 4095 - analogRead(joystickXPin2);  // Swapped and inverted for joystick 2
+  // Swap X and Y readings and invert them
+  int rawX1 = 4095 - analogRead(joystickYPin1);  // Swapped and inverted for joystick 1
+  int rawY1 = 4095 - analogRead(joystickXPin1);  // Swapped and inverted for joystick 1
+  int rawX2 = 4095 - analogRead(joystickYPin2);  // Swapped and inverted for joystick 2
+  int rawY2 = 4095 - analogRead(joystickXPin2);  // Swapped and inverted for joystick 2
 
-  // Interpret the joy stick data
-  // converts the analog value to commands 
-  // reset commands
+  // Normalize joystick 1 readings
+  float x1 = (rawX1 - 2048) / 2048.0f;
+  float y1 = (rawY1 - 2048) / 2048.0f;
+
+  // Normalize joystick 2 readings
+  float x2 = (rawX2 - 2048) / 2048.0f;
+  float y2 = (rawY2 - 2048) / 2048.0f;
+
+  // Rotation angles in radians
+  const float angle1 = -45.0f * PI / 180.0f;  // Joystick 1 rotation correction
+  const float angle2 = 45.0f * PI / 180.0f;   // Joystick 2 rotation correction
+
+  // Precompute cos and sin values
+  float cos_theta1 = cos(angle1);
+  float sin_theta1 = sin(angle1);
+  float cos_theta2 = cos(angle2);
+  float sin_theta2 = sin(angle2);
+
+  // Apply rotation correction for joystick 1
+  float x_corrected1 = x1 * cos_theta1 - y1 * sin_theta1;
+  float y_corrected1 = x1 * sin_theta1 + y1 * cos_theta1;
+
+  // Apply rotation correction for joystick 2
+  float x_corrected2 = x2 * cos_theta2 - y2 * sin_theta2;
+  float y_corrected2 = x2 * sin_theta2 + y2 * cos_theta2;
+
+  // Define threshold
+  #define THRESHOLD 0.5f
+
+  // Interpret joystick 1 commands
   myData.command1 = COMMAND_NO;
+
+  if (x_corrected1 < -THRESHOLD)
+      myData.command1 |= COMMAND_LEFT;
+  else if (x_corrected1 > THRESHOLD)
+      myData.command1 |= COMMAND_RIGHT;
+
+  if (y_corrected1 < -THRESHOLD)
+      myData.command1 |= COMMAND_DOWN;
+  else if (y_corrected1 > THRESHOLD)
+      myData.command1 |= COMMAND_UP;
+
+  // Interpret joystick 2 commands
   myData.command2 = COMMAND_NO;
 
-  // check left/right commands for joystick 1
-  if (xValue1 < LEFT_THRESHOLD)
-    //Bitwise OR
-    myData.command1 = myData.command1 | COMMAND_LEFT;
-  else if (xValue1 > RIGHT_THRESHOLD)
-    myData.command1 = myData.command1 | COMMAND_RIGHT;
+  if (x_corrected2 < -THRESHOLD)
+      myData.command2 |= COMMAND_LEFT;
+  else if (x_corrected2 > THRESHOLD)
+      myData.command2 |= COMMAND_RIGHT;
 
-  // check up/down commands for joystick 1
-  if (yValue1 > UP_THRESHOLD)
-    myData.command1 = myData.command1 | COMMAND_UP;
-  else if (yValue1 < DOWN_THRESHOLD)
-    myData.command1 = myData.command1 | COMMAND_DOWN;
-
-  // check left/right commands for joystick 2
-  if (xValue2 < LEFT_THRESHOLD)
-    //Bitwise OR
-    myData.command2 = myData.command2 | COMMAND_LEFT;
-  else if (xValue2 > RIGHT_THRESHOLD)
-    myData.command2 = myData.command2 | COMMAND_RIGHT;
-
-  // check up/down commands for joystick 2
-  if (yValue2 > UP_THRESHOLD)
-    myData.command2 = myData.command2 | COMMAND_UP;
-  else if (yValue2 < DOWN_THRESHOLD)
-    myData.command2 = myData.command2 | COMMAND_DOWN;
+  if (y_corrected2 < -THRESHOLD)
+      myData.command2 |= COMMAND_DOWN;
+  else if (y_corrected2 > THRESHOLD)
+      myData.command2 |= COMMAND_UP;
 
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
