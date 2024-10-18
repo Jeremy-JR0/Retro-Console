@@ -150,6 +150,7 @@ unsigned long lastButton1PressTime = 0;
 unsigned long lastButton2PressTime = 0;
 unsigned long lastButton3PressTime = 0;
 
+bool newSnakeHighScore = false;
 
 unsigned long lastButton3PressTime1 = 0; // For Player 1
 unsigned long lastButton3PressTime2 = 0; // For Player 2
@@ -1723,66 +1724,71 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   else if(appState == MENU_PLAYER_COUNT) {
     // Handle navigation in player count menu
     if (data.button2 == LOW && (currentMillis - lastSelectInputTime >= debounceInterval)) { // Select button pressed
-      lastSelectInputTime = currentMillis; // Debounce select button
-      // Handle selection based on currentPlayerCountItem
-      const char* playerCount = playerCountMenuItems[currentPlayerCountItem];
-      std::vector<const char*> menuItems = getPlayerCountMenuItems();
-      int totalItems = menuItems.size();
-      Serial.print("Selected Option: ");
-      Serial.println(playerCount);
+        lastSelectInputTime = currentMillis; // Debounce select button
+        // Handle selection based on currentPlayerCountItem
+        std::vector<const char*> menuItems = getPlayerCountMenuItems();
+        const char* selectedOption = menuItems[currentPlayerCountItem];
+        Serial.print("Selected Option: ");
+        Serial.println(selectedOption);
 
-      if (strcmp(playerCount, "Leaderboard") == 0) {
-        appState = DISPLAY_LEADERBOARD;
-      } else {
-        // Implement action based on selectedGame and playerCount
-        appState = GAME_RUNNING;
-        // Initialize game variables here if needed
-        if (strcmp(selectedGame, "Pong") == 0) {
-          // Reset game variables
-          playerScore = 0;
-          aiScore = 0;
-          serve = true;
-          playerServe = true;
-          gameState = GAME_PLAYING;
-          resetBall();
-          newHighScore = false;
-        }
-        else if (strcmp(selectedGame, "Flappy Bird") == 0) {
-          // Reset Flappy Bird game
-          resetFlappyBirdGame(currentPlayerCountItem == 0);
-          fbNewHighScore = false;
-          bool isSinglePlayer = (currentPlayerCountItem == 0);
-          runFlappyBird(isSinglePlayer);
-          startSong(flappyBirdSong);  // Start the Flappy Bird song
-        }
-        else if (strcmp(selectedGame, "Maze Hunter") == 0) {
-          if (currentPlayerCountItem == 0) { // Two-player mode selected
-            twoPlayerMode = true;
-            // Initialize 3D game variables
-            generateRandomMaze();
-            resetPlayerPositions();   // Reset player positions
-            gameState3D = GAME_PLAYING_3D;
-            player1Health = 8;        // Reset health
-            player2Health = 8;
-            player1Lives = 3;         // Reset lives
-            player2Lives = 3;
-            startSong(DoomSong);
-          } else if (currentPlayerCountItem == 1) { // Leaderboard selected
+        if (strcmp(selectedOption, "Leaderboard") == 0) {
             appState = DISPLAY_LEADERBOARD;
-          }
+        } else {
+            // Implement action based on selectedGame and selectedOption
+            appState = GAME_RUNNING;
+            // Initialize game variables here if needed
+            if (strcmp(selectedGame, "Pong") == 0) {
+                // Pong game initialization
+                bool isSinglePlayer = (strcmp(selectedOption, "Single Player") == 0);
+                playerScore = 0;
+                aiScore = 0;
+                serve = true;
+                playerServe = true;
+                gameState = GAME_PLAYING;
+                resetBall();
+                newHighScore = false;
+            }
+            else if (strcmp(selectedGame, "Flappy Bird") == 0) {
+                // Flappy Bird game initialization
+                bool isSinglePlayer = (strcmp(selectedOption, "Single Player") == 0);
+                resetFlappyBirdGame(isSinglePlayer);
+                fbNewHighScore = false;
+                runFlappyBird(isSinglePlayer);
+                startSong(flappyBirdSong);  // Start the Flappy Bird song
+            }
+            else if (strcmp(selectedGame, "Maze Hunter") == 0) {
+                // Maze Hunter game initialization
+                if (strcmp(selectedOption, "Two Player") == 0) {
+                    twoPlayerMode = true;
+                    generateRandomMaze();
+                    resetPlayerPositions();   // Reset player positions
+                    gameState3D = GAME_PLAYING_3D;
+                    player1Health = 8;        // Reset health
+                    player2Health = 8;
+                    player1Lives = 3;         // Reset lives
+                    player2Lives = 3;
+                    startSong(DoomSong);
+                }
+            }
+            else if (strcmp(selectedGame, "Snake") == 0) {
+                // Snake game initialization
+                if (strcmp(selectedOption, "Single Player") == 0) {
+                    resetSnakeGame(true);
+                    newSnakeHighScore = false;
+                }
+            }
         }
-      }
     } else {
-      // Handle navigation with joystick 1
-      if ((data.command1 & COMMAND_DOWN) && (currentMillis - lastNavInputTime >= debounceInterval)) { // Move down
-        currentPlayerCountItem = (currentPlayerCountItem + 1) % totalPlayerCountMenuItems;
-        lastNavInputTime = currentMillis; // Debounce navigation input
-      } else if ((data.command1 & COMMAND_UP) && (currentMillis - lastNavInputTime >= debounceInterval)) { // Move up
-        currentPlayerCountItem = (currentPlayerCountItem - 1 + totalPlayerCountMenuItems) % totalPlayerCountMenuItems;
-        lastNavInputTime = currentMillis; // Debounce navigation input
-      }
+        // Handle navigation with joystick 1
+        if ((data.command1 & COMMAND_DOWN) && (currentMillis - lastNavInputTime >= debounceInterval)) { // Move down
+            currentPlayerCountItem = (currentPlayerCountItem + 1) % totalPlayerCountMenuItems;
+            lastNavInputTime = currentMillis; // Debounce navigation input
+        } else if ((data.command1 & COMMAND_UP) && (currentMillis - lastNavInputTime >= debounceInterval)) { // Move up
+            currentPlayerCountItem = (currentPlayerCountItem - 1 + totalPlayerCountMenuItems) % totalPlayerCountMenuItems;
+            lastNavInputTime = currentMillis; // Debounce navigation input
+        }
     }
-  }
+}
   else if (appState == DISPLAY_LEADERBOARD) {
       if (data.button2 == LOW && (currentMillis - lastSelectInputTime >= debounceInterval)) { // Press select to return
         lastSelectInputTime = currentMillis; // Debounce select button
@@ -2321,7 +2327,6 @@ int foodY = 0;
 bool snakeGameInitialized = false;
 bool snakeGameOver = false;
 int snakeScore = 0;
-bool newSnakeHighScore = false;
 
 // Grid size
 const int gridSize = 10; // Each grid cell is 10x10 pixels
