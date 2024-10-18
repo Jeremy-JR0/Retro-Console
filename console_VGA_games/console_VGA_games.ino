@@ -3837,21 +3837,23 @@ void enterPlayerName(char* playerName) {
     previousButton2State = currentButton2State;
     previousButton3State = currentButton3State;
 
-    if (nameEntered) {
-        // Validate and save name
-        saveHighScore(selectedGame, playerName);
-        nameEntered = false;
-        appState = MENU_MAIN;
-        // Reset game variables as needed
-        snakeGameInitialized = false;
-        snakeGameOver = false;
-        snakeScore = 0;
-        newSnakeHighScore = false;
-    }
+  if (nameEntered) {
+    // Save the high score
+    saveHighScore(selectedGame, playerName);
+
+    // Reset variables
+    nameEntered = false;
+    appState = MENU_MAIN;
+    // Reset game variables as needed
+    snakeGameInitialized = false;
+    snakeGameOver = false;
+    snakeScore = 0;
+    newSnakeHighScore = false;
+  }
 }
 
 void saveHighScore(const char* gameName, const char* playerName) {
-  // Construct filename
+  // Construct filename based on the game name
   String filename = "/";
   if (strcmp(gameName, "Pong") == 0) {
     filename += "pongLeaderboard.txt";
@@ -3865,16 +3867,17 @@ void saveHighScore(const char* gameName, const char* playerName) {
     filename += "leaderboard.txt"; // Default filename
   }
 
-  // Read existing leaderboard
+  // Structure to hold score entries
   struct ScoreEntry {
     String name;
     int score;
   };
 
-  ScoreEntry entries[10];
+  ScoreEntry entries[11]; // Allow up to 11 entries to handle the new score insertion
   int entryCount = 0;
   int newScore = 0;
 
+  // Get the new score based on the game
   if (strcmp(gameName, "Pong") == 0) {
     newScore = playerScore;
   } else if (strcmp(gameName, "Flappy Bird") == 0) {
@@ -3883,6 +3886,7 @@ void saveHighScore(const char* gameName, const char* playerName) {
     newScore = snakeScore;
   }
 
+  // Read existing leaderboard from the SD card
   File file = SD.open(filename);
   if (file) {
     while (file.available() && entryCount < 10) {
@@ -3897,30 +3901,37 @@ void saveHighScore(const char* gameName, const char* playerName) {
     file.close();
   }
 
-  // Insert new score
+  // Insert the new score into the entries array
   bool inserted = false;
   for (int i = 0; i < entryCount; i++) {
     if (newScore > entries[i].score) {
-      // Shift scores down
-      for (int j = entryCount; j > i; j--) {
+      // Shift entries down to make room for the new score
+      int startIndex = (entryCount < 10) ? entryCount : 9; // Max index is 9 (10 entries)
+      for (int j = startIndex; j > i; j--) {
         entries[j] = entries[j - 1];
       }
       entries[i].name = playerName;
       entries[i].score = newScore;
+      if (entryCount < 10) entryCount++; // Increment count if less than 10 entries
       inserted = true;
-      if (entryCount < 10) entryCount++;
       break;
     }
   }
+
+  // If the new score is not higher than any existing scores and there's room, add it to the end
   if (!inserted && entryCount < 10) {
     entries[entryCount].name = playerName;
     entries[entryCount].score = newScore;
     entryCount++;
   }
 
-  // Write back to file
+  // Delete the existing file before writing new data
+  SD.remove(filename);
+
+  // Open the file for writing
   file = SD.open(filename, FILE_WRITE);
   if (file) {
+    // Write the top 10 entries back to the file
     for (int i = 0; i < entryCount && i < 10; i++) {
       file.print(entries[i].name);
       file.print(" ");
