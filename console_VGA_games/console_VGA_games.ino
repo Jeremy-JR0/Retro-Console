@@ -242,7 +242,7 @@ void drawHeart(int x, int y, uint16_t fillColor, uint16_t outlineColor);
 
 // Leaderboard Functions
 void displayLeaderboard(const char* gameName);
-void updateLeaderboard(const char* gameName, int score);
+bool updateLeaderboard(const char* gameName, int score);
 void enterPlayerName(char* playerName);
 void displayKeyboard(char* playerName, int maxLength);
 void audioTask(void *parameter);
@@ -1702,7 +1702,7 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
 
   if(appState == MENU_MAIN) {
     // Handle navigation in main menu
-    if (data.button2 == LOW && (currentMillis - lastSelectInputTime >= debounceInterval)) { // Select button pressed
+    if (data.button2 == LOW && (currentMillis - lastSelectInputTime >= debouncePause)) { // Select button pressed
       lastSelectInputTime = currentMillis; // Debounce select button
       // Handle selection based on currentMainMenuItem
       selectedGame = mainMenuItems[currentMainMenuItem];
@@ -2347,8 +2347,7 @@ void runSnake(bool isSinglePlayer) {
   if (snakeGameOver) {
     // Check for high score
     if (!newSnakeHighScore) {
-      updateLeaderboard("Snake", snakeScore);
-      newSnakeHighScore = true;
+      newSnakeHighScore = updateLeaderboard("Snake", snakeScore);
     }
 
     // Display Game Over Screen
@@ -3702,12 +3701,10 @@ void displayLeaderboard(const char* gameName) {
   gfx.print("Press Select to return");
 }
 
-void updateLeaderboard(const char* gameName, int score) {
+bool updateLeaderboard(const char* gameName, int score) {
   // Construct filename
   String filename = "/";
-  if (strcmp(gameName, "Pong") == 0) {
-    filename += "pongLeaderboard.txt";
-  } else if (strcmp(gameName, "Snake") == 0) {
+  if (strcmp(gameName, "Snake") == 0) {
     filename += "snakeLeaderboard.txt";
   } else if (strcmp(gameName, "Flappy Bird") == 0) {
     filename += "flappyBirdLeaderboard.txt";
@@ -3755,6 +3752,9 @@ void updateLeaderboard(const char* gameName, int score) {
     // Set flag to enter player name
     appState = NAME_ENTRY;
   }
+
+  // Return whether the score qualifies
+  return qualifies;
 }
 
 void enterPlayerName(char* playerName) {
