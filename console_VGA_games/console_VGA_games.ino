@@ -30,6 +30,10 @@ const int resolution = 8;   // 8-bit resolution for PWM
 int previousButton3State1 = HIGH;
 int previousButton3State2 = HIGH;
 
+// Add this global variable
+bool pongGameInitialized = false;
+
+
 struct Sprite {
     float x, y;      // Position in the game world
     int texture;     // Identifier for the sprite type (e.g., 0 for bullets, 1 for player)
@@ -155,6 +159,8 @@ bool newSnakeHighScore = false;
 unsigned long lastButton3PressTime1 = 0; // For Player 1
 unsigned long lastButton3PressTime2 = 0; // For Player 2
 
+
+
 // =========================
 // Color Definitions
 // =========================
@@ -203,9 +209,9 @@ int calculateTextHeight(int textSize);
 void runSelectedGame();
 void runPong(bool isSinglePlayer);
 void handlePlayerInputs(bool isSinglePlayer);
-void checkPaddleCollisions();
+void checkPaddleCollisions(bool isSinglePlayer);
 void drawGame(bool isSinglePlayer);
-void resetBall();
+void resetBall(bool isSinglePlayer);
 void handlePaddleCollision(int paddleX, int paddleY, bool isPlayerPaddle);
 void drawCenterLine();
 void displayScores(bool isSinglePlayer);
@@ -280,10 +286,15 @@ int paddleWidth = 5;     // Width of the paddles (vertical paddles)
 int paddleHeight = 40;   // Height of the paddles
 int playerPaddleX = 20;  // X position of player paddle (left side)
 int playerPaddleY;       // Y position of player paddle
+// Paddle positions
+
+float player2PaddleY;     // Player 2 paddle Y position (in two-player mode)
+int player2PaddleX = mode.hRes - 25;       // Player 2 paddle X position (in two-player mode)
+
 int playerSpeed = 5;     // Speed of player paddle
 
 int aiPaddleX = mode.hRes - 25; // X position of AI paddle (right side)
-int aiPaddleY;                  // Y position of AI paddle
+float aiPaddleY;                  // Y position of AI paddle
 int aiSpeed = 4;                // Speed of AI paddle
 
 // Define the line segment of the ball's movement
@@ -295,6 +306,8 @@ float paddleLeft;
 float paddleRight;
 float paddleTop;
 float paddleBottom;
+
+
 
 // Scoring
 int playerScore = 0;
@@ -1745,7 +1758,7 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
                 serve = true;
                 playerServe = true;
                 gameState = GAME_PLAYING;
-                resetBall();
+                resetBall(isSinglePlayer);
                 newHighScore = false;
             }
             else if (strcmp(selectedGame, "Flappy Bird") == 0) {
@@ -2015,7 +2028,24 @@ void checkPause() {
 // Pong Game Logic
 void runPong(bool isSinglePlayer) {
     unsigned long currentMillis = millis();
+
+    if (!pongGameInitialized) {
+        // Initial paddle positions
+        playerPaddleY = (gfx.height() - paddleHeight) / 2;  // Center vertically
+        playerPaddleX = 10;  // Left side paddle X position
+
+        if (isSinglePlayer) {
+            aiPaddleY = (gfx.height() - paddleHeight) / 2;  // Center vertically
+            aiPaddleX = gfx.width() - paddleWidth - 10; // Right side paddle X position
+        } else {
+            player2PaddleY = (gfx.height() - paddleHeight) / 2;  // Center vertically
+            player2PaddleX = gfx.width() - paddleWidth - 10; // Right side paddle X position
+        }
+
+        pongGameInitialized = true;
+    }
     checkPause();
+
     if (gameState == GAME_OVER) {
         displayWinMessage(playerScore >= maxScore ? "Player 1 Wins!" : isSinglePlayer ? "AI Wins!" : "Player 2 Wins!");
         if (controllerData[1].button2 == LOW) {  // Button press to return to menu
@@ -2054,7 +2084,7 @@ void runPong(bool isSinglePlayer) {
         }
 
         // Check paddle collisions
-        checkPaddleCollisions();
+        checkPaddleCollisions(isSinglePlayer);
 
         // Check for scoring
         if (ballX - ballRadius <= 0) {
@@ -2064,7 +2094,7 @@ void runPong(bool isSinglePlayer) {
             if (gameState != GAME_OVER) {
                 serve = true;
                 playerServe = false;
-                resetBall();
+                resetBall(isSinglePlayer);
             }
         } else if (ballX + ballRadius >= gfx.width()) {
             // Player 1 scores
@@ -2073,7 +2103,7 @@ void runPong(bool isSinglePlayer) {
             if (gameState != GAME_OVER) {
                 serve = true;
                 playerServe = true;
-                resetBall();
+                resetBall(isSinglePlayer);
             }
         }
 
@@ -2084,43 +2114,41 @@ void runPong(bool isSinglePlayer) {
 
 // Handle player inputs for both single-player and two-player mode
 void handlePlayerInputs(bool isSinglePlayer) {
-  // Controller 1: Player 1 Paddle
-  if (controllerData[1].command1 & COMMAND_UP) {
-    playerPaddleY -= playerSpeed;
-    if (playerPaddleY < 0) playerPaddleY = 0;
-  }
-  if (controllerData[1].command1 & COMMAND_DOWN) {
-    playerPaddleY += playerSpeed;
-    if (playerPaddleY + paddleHeight > gfx.height()) playerPaddleY = gfx.height() - paddleHeight;
-  }
-
-  if (isSinglePlayer) {
-      // AI Logic with Proportional Control
-      float targetY = ballY - paddleHeight / 2;
-      float deltaY = targetY - aiPaddleY;
-
-      // Limit the AI paddle's speed
-      if (deltaY > aiSpeed) deltaY = aiSpeed;
-      if (deltaY < -aiSpeed) deltaY = -aiSpeed;
-
-      aiPaddleY += deltaY;
-
-      // Boundary checks
-      if (aiPaddleY < 0) aiPaddleY = 0;
-      if (aiPaddleY + paddleHeight > gfx.height()) aiPaddleY = gfx.height() - paddleHeight;
-  } else {
-    // Controller 2: Player 2 Paddle
-    if (controllerMap.size() >= 2) {
-      if ((controllerData[2].button1 == -1) && controllerData.find(2) != controllerData.end()) {
-        aiPaddleY -= playerSpeed;
-        if (aiPaddleY < 0) aiPaddleY = 0;
-      }
-      if ((controllerData[2].button1 == 1) && controllerData.find(2) != controllerData.end()) {
-        aiPaddleY += playerSpeed;
-        if (aiPaddleY + paddleHeight > gfx.height()) aiPaddleY = gfx.height() - paddleHeight;
-      }
+    // Controller 1: Player 1 Paddle
+    if (controllerData[1].command1 & COMMAND_UP) {
+        playerPaddleY -= playerSpeed;
+        if (playerPaddleY < 0) playerPaddleY = 0;
     }
-  }
+    if (controllerData[1].command1 & COMMAND_DOWN) {
+        playerPaddleY += playerSpeed;
+        if (playerPaddleY + paddleHeight > gfx.height()) playerPaddleY = gfx.height() - paddleHeight;
+    }
+
+    if (isSinglePlayer) {
+        // AI Logic with Proportional Control
+        float targetY = ballY - paddleHeight / 2;
+        float deltaY = targetY - aiPaddleY;
+
+        // Limit the AI paddle's speed
+        if (deltaY > aiSpeed) deltaY = aiSpeed;
+        if (deltaY < -aiSpeed) deltaY = -aiSpeed;
+
+        aiPaddleY += deltaY;
+
+        // Boundary checks
+        if (aiPaddleY < 0) aiPaddleY = 0;
+        if (aiPaddleY + paddleHeight > gfx.height()) aiPaddleY = gfx.height() - paddleHeight;
+    } else {
+        // Controller 2: Player 2 Paddle
+        if (controllerData[2].command1 & COMMAND_UP) {
+            player2PaddleY -= playerSpeed;
+            if (player2PaddleY < 0) player2PaddleY = 0;
+        }
+        if (controllerData[2].command1 & COMMAND_DOWN) {
+            player2PaddleY += playerSpeed;
+            if (player2PaddleY + paddleHeight > gfx.height()) player2PaddleY = gfx.height() - paddleHeight;
+        }
+    }
 }
 
 // Function to setup serve
@@ -2155,25 +2183,27 @@ void setupServe(bool isSinglePlayer) {
 
 
 // Check for paddle collisions
-void checkPaddleCollisions() {
-    // AI Paddle Rectangle
-    paddleLeft = aiPaddleX;
-    paddleRight = aiPaddleX + paddleWidth;
-    paddleTop = aiPaddleY;
-    paddleBottom = aiPaddleY + paddleHeight;
+void checkPaddleCollisions(bool isSinglePlayer) {
+    // Player 2 or AI Paddle Rectangle
+    if (isSinglePlayer) {
+        paddleLeft = aiPaddleX;
+        paddleRight = aiPaddleX + paddleWidth;
+        paddleTop = aiPaddleY;
+        paddleBottom = aiPaddleY + paddleHeight;
+    } else {
+        paddleLeft = player2PaddleX;
+        paddleRight = player2PaddleX + paddleWidth;
+        paddleTop = player2PaddleY;
+        paddleBottom = player2PaddleY + paddleHeight;
+    }
 
-    // Check for collision with AI paddle
+    // Check for collision with Player 2 or AI paddle
     if (lineIntersectsRect(prevBallX, prevBallY, ballX, ballY, paddleLeft, paddleTop, paddleRight, paddleBottom)) {
         // Handle collision
-        handlePaddleCollision(aiPaddleX, aiPaddleY, false);
+        handlePaddleCollision(paddleLeft, paddleTop, false);
         collisionOccurred = true;
         collisionCooldown = millis();
     }
-
-
-    // Define the line segment of the ball's movement
-    ballDeltaX = ballX - prevBallX;
-    ballDeltaY = ballY - prevBallY;
 
     // Player Paddle Rectangle
     paddleLeft = playerPaddleX;
@@ -2184,29 +2214,33 @@ void checkPaddleCollisions() {
     // Check for collision with player paddle
     if (lineIntersectsRect(prevBallX, prevBallY, ballX, ballY, paddleLeft, paddleTop, paddleRight, paddleBottom)) {
         // Handle collision
-        handlePaddleCollision(playerPaddleX, playerPaddleY, true);
+        handlePaddleCollision(paddleLeft, paddleTop, true);
         collisionOccurred = true;
         collisionCooldown = millis();
     }
-  }
+}
 
-// Draw the game elements
 void drawGame(bool isSinglePlayer) {
-  // Clear the previous frame
-  gfx.fillScreen(blackColor);
+    // Clear the previous frame
+    gfx.fillScreen(blackColor);
 
-  // Draw center line and scores
-  drawCenterLine();
-  displayScores(isSinglePlayer);
+    // Draw center line and scores
+    drawCenterLine();
+    displayScores(isSinglePlayer);
 
-  // Draw the ball at the updated position
-  gfx.fillCircle(ballX, ballY, ballRadius, ballColor);
+    // Draw the ball at the updated position
+    gfx.fillCircle(ballX, ballY, ballRadius, ballColor);
 
-  // Draw the player paddle
-  gfx.fillRect(playerPaddleX, playerPaddleY, paddleWidth, paddleHeight, paddleColor);
+    // Draw the player paddle
+    gfx.fillRect(playerPaddleX, playerPaddleY, paddleWidth, paddleHeight, paddleColor);
 
-  // Draw the AI or Player 2 paddle
-  gfx.fillRect(aiPaddleX, aiPaddleY, paddleWidth, paddleHeight, paddleColor);
+    if (isSinglePlayer) {
+        // Draw the AI paddle
+        gfx.fillRect(aiPaddleX, aiPaddleY, paddleWidth, paddleHeight, paddleColor);
+    } else {
+        // Draw Player 2's paddle
+        gfx.fillRect(player2PaddleX, player2PaddleY, paddleWidth, paddleHeight, paddleColor);
+    }
 }
 
 // Function to Handle Paddle Collision and Adjust Ball Angle
@@ -2237,13 +2271,18 @@ void handlePaddleCollision(int paddleX, int paddleY, bool isPlayerPaddle) {
 }
 
 // Function to Reset the Ball Position
-void resetBall() {
-  ballX = mode.hRes / 2;
-  ballY = mode.vRes / 2;
-  ballSpeed = 3.0; // Reset speed
-  collisionOccurred = false;
-  playerPaddleY = mode.vRes / 2 - paddleHeight / 2;
-  aiPaddleY = mode.vRes / 2 - paddleHeight / 2;
+void resetBall(bool isSinglePlayer) {
+    ballX = mode.hRes / 2;
+    ballY = mode.vRes / 2;
+    ballSpeed = 3.0; // Reset speed
+    collisionOccurred = false;
+    playerPaddleY = mode.vRes / 2 - paddleHeight / 2;
+
+    if (isSinglePlayer) {
+        aiPaddleY = mode.vRes / 2 - paddleHeight / 2;
+    } else {
+        player2PaddleY = mode.vRes / 2 - paddleHeight / 2;
+    }
 }
 
 // Function to Draw Center Line
@@ -2405,7 +2444,8 @@ void resetSnakeGame(bool isSinglePlayer) {
   snake.clear();
   SnakeSegment head;
   head.x = (screenWidth / 2 / gridSize) * gridSize;
-  head.y = (screenHeight / 2 / gridSize) * gridSize;
+  // Adjust the starting position of the snake to be below the score area
+  head.y = ((screenHeight / 2) / gridSize) * gridSize + 20; // Adding 20 pixels for the score area
   snake.push_back(head);
 
   snakeDirection = COMMAND_RIGHT;
@@ -2452,6 +2492,29 @@ void updateSnake() {
             break;
     }
 
+    // **Edge Wrapping Logic**
+    // Wrap around horizontally
+    if (newHead.x < 0) {
+        newHead.x = screenWidth - gridSize;
+    } else if (newHead.x >= screenWidth) {
+        newHead.x = 0;
+    }
+
+    // Wrap around vertically
+    if (newHead.y < 0) {
+        newHead.y = screenHeight - gridSize;
+    } else if (newHead.y >= screenHeight) {
+        newHead.y = 0;
+    }
+
+    // Check self-collision
+    for (const auto& segment : snake) {
+        if (newHead.x == segment.x && newHead.y == segment.y) {
+            snakeGameOver = true;
+            return;
+        }
+    }
+
     // Add new head
     snake.insert(snake.begin(), newHead);
 
@@ -2485,17 +2548,17 @@ void checkSnakeCollision() {
 
 void drawSnakeGame() {
     // Clear the play area
-    gfx.fillRect(0, 20, screenWidth, screenHeight - 20, blackColor); // Clear play area
+    gfx.fillRect(0, 20, screenWidth, screenHeight - 20, blackColor); // Adjusted to leave space for the score
 
-    // Draw the entire snake
+    // Draw the snake
     for (const auto& segment : snake) {
         gfx.fillRect(segment.x, segment.y, gridSize, gridSize, snakeColor);
     }
 
-    // Draw food
+    // Draw the food
     gfx.fillRect(foodX, foodY, gridSize, gridSize, foodColor);
 
-    // Draw score (update as needed)
+    // Draw the score
     gfx.fillRect(0, 0, screenWidth, 20, blackColor); // Clear score area
     gfx.setTextColor(whiteColor);
     gfx.setCursor(10, 10);
@@ -2505,16 +2568,18 @@ void drawSnakeGame() {
 
 
 void generateFood() {
-  foodX = random(screenWidth / gridSize) * gridSize;
-  foodY = random(screenHeight / gridSize) * gridSize;
+    int maxX = (screenWidth / gridSize) - 1;
+    int maxY = (screenHeight / gridSize) - 1;
+    foodX = random(0, maxX + 1) * gridSize;
+    foodY = random(0, maxY + 1) * gridSize;
 
-  // Ensure food does not appear on the snake
-  for (const auto& segment : snake) {
-    if (foodX == segment.x && foodY == segment.y) {
-      generateFood();
-      break;
+    // Ensure food does not appear on the snake
+    for (const auto& segment : snake) {
+        if (foodX == segment.x && foodY == segment.y) {
+            generateFood();
+            return;
+        }
     }
-  }
 }
 
 // =========================
